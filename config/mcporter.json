@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "serper-search": {
+      "command": "node",
+      "args": [
+        "/Users/manohar_air/clawd/tools/serper-search/node_modules/serper-search-scrape-mcp-server/build/index.js"
+      ],
+      "cwd": "/Users/manohar_air/clawd/tools/serper-search",
+      "env": {
+        "SERPER_API_KEY": "${SERPER_API_KEY}"
+      }
+    }
+  }
+}

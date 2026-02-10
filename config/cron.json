@@ -1,0 +1,26 @@
+[
+  {
+    "id": "1",
+    "name": "Morning Briefing",
+    "schedule": "0 9 * * *",
+    "description": "Daily briefing with weather and calendar events.",
+    "enabled": true,
+    "command": "skill:briefing"
+  },
+  {
+    "id": "2",
+    "name": "System Cleanup",
+    "schedule": "0 0 * * 0",
+    "description": "Weekly cleanup of temporary files.",
+    "enabled": true,
+    "command": "system:cleanup"
+  },
+  {
+    "id": "2fc41da8-1014-4357-9e7d-51ec11a486d0",
+    "name": "Test Job",
+    "schedule": "0 * * * *",
+    "command": "echo hello",
+    "description": "",
+    "enabled": true
+  }
+]

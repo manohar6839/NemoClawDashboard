@@ -1,0 +1,14 @@
+{
+  "name": "serper-search-skill",
+  "version": "1.0.0",
+  "description": "MCP server for Serper.dev search",
+  "scripts": {
+    "start": "serper-mcp"
+  },
+  "dependencies": {
+    "serper-search-scrape-mcp-server": "^0.1.2"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^8.0.0"
+  }
+}

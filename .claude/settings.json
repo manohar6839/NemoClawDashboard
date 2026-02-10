@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(clawdbot version:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
