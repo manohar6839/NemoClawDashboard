@@ -2,17 +2,16 @@
 
 import * as React from "react"
 import {
-  SquareTerminal,
   Bot,
   Settings2,
-  Clock,
-  BrainCircuit,
   LayoutDashboard,
   ScrollText,
-  Activity,
-  Users,
+  CheckSquare,
+  DollarSign,
+  FolderOpen,
+  Briefcase,
 } from "lucide-react"
-import { useGatewayEvents } from "@/hooks/use-gateway"
+import { useTigerLogs } from "@/hooks/use-bridge"
 
 import {
   Sidebar,
@@ -25,6 +24,7 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
+// Tiger-specific navigation - no more old clawdbot pages
 const navMain = [
   {
     title: "Dashboard",
@@ -32,34 +32,24 @@ const navMain = [
     icon: LayoutDashboard,
   },
   {
-    title: "Chat",
-    url: "/chat",
-    icon: SquareTerminal,
+    title: "Projects",
+    url: "/projects",
+    icon: Briefcase,
   },
   {
-    title: "Memory",
-    url: "/memory",
-    icon: BrainCircuit,
+    title: "Workspace",
+    url: "/workspace",
+    icon: FolderOpen,
   },
   {
-    title: "Skills",
-    url: "/skills",
-    icon: Bot,
+    title: "Tasks",
+    url: "/tasks",
+    icon: CheckSquare,
   },
   {
-    title: "Cron Jobs",
-    url: "/cron",
-    icon: Clock,
-  },
-  {
-    title: "Sessions",
-    url: "/sessions",
-    icon: Users,
-  },
-  {
-    title: "Activity",
-    url: "/activity",
-    icon: Activity,
+    title: "Cost Monitor",
+    url: "/cost",
+    icon: DollarSign,
   },
   {
     title: "Logs",
@@ -77,7 +67,9 @@ const navSecondary = [
 ]
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const { connected } = useGatewayEvents(() => {}, [])
+  // Use Tiger logs SSE for connection status
+  // connected means the bridge is reachable
+  const { connected } = useTigerLogs({ lines: 1, maxLines: 1 })
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -90,7 +82,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   <Bot className="size-4" />
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
+                  <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
                   <span className="text-xs text-muted-foreground">{connected ? "Live" : "Offline"}</span>
                 </div>
               </a>

@@ -5,17 +5,10 @@ import { Settings2, Save, Loader2, RefreshCw, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { useGatewayRequest } from "@/hooks/use-gateway"
+import { useBridgeRequest } from "@/hooks/use-bridge"
 import { cn } from "@/lib/utils"
 
 type ConfigValue = string | number | boolean | null | ConfigValue[] | { [key: string]: ConfigValue }
-
-interface ConfigSection {
-  key: string
-  label: string
-  description: string
-  fields: ConfigField[]
-}
 
 interface ConfigField {
   path: string
@@ -25,63 +18,50 @@ interface ConfigField {
   original: ConfigValue
 }
 
-const CONFIG_SECTIONS: { key: string; label: string; description: string; paths: { path: string; label: string; type: "text" | "number" | "boolean" | "password" }[] }[] = [
-  {
-    key: "gateway",
-    label: "Gateway",
-    description: "Core gateway server settings",
-    paths: [
-      { path: "gateway.port", label: "Port", type: "number" },
-      { path: "gateway.host", label: "Host", type: "text" },
-      { path: "gateway.auth.token", label: "Auth Token", type: "password" },
-    ],
-  },
+// Tiger config sections - matches the structure from /tiger/config
+const CONFIG_SECTIONS = [
   {
     key: "agent",
     label: "Agent",
-    description: "AI agent configuration",
+    description: "AI agent model configuration",
     paths: [
-      { path: "agent.name", label: "Agent Name", type: "text" },
-      { path: "agent.model", label: "Primary Model", type: "text" },
-      { path: "agent.fallbackModel", label: "Fallback Model", type: "text" },
-      { path: "agent.maxConcurrentAgents", label: "Max Concurrent Agents", type: "number" },
-      { path: "agent.maxSubAgents", label: "Max Sub-Agents", type: "number" },
+      { path: "model", label: "Primary Model", type: "text" },
+      { path: "fallbackModels", label: "Fallback Models", type: "text" },
     ],
   },
   {
-    key: "telegram",
-    label: "Telegram",
-    description: "Telegram bot integration",
+    key: "execution",
+    label: "Execution",
+    description: "Command execution settings",
     paths: [
-      { path: "telegram.enabled", label: "Enabled", type: "boolean" },
-      { path: "telegram.token", label: "Bot Token", type: "password" },
+      { path: "maxDuration", label: "Max Duration (seconds)", type: "number" },
+      { path: "maxRetries", label: "Max Retries", type: "number" },
     ],
   },
-  {
-    key: "heartbeat",
-    label: "Heartbeat",
-    description: "Periodic check settings",
-    paths: [
-      { path: "heartbeat.enabled", label: "Enabled", type: "boolean" },
-      { path: "heartbeat.intervalMinutes", label: "Interval (minutes)", type: "number" },
-    ],
-  },
-]
+] as const
+
+interface ConfigSection {
+  key: string
+  label: string
+  description: string
+  fields: ConfigField[]
+}
 
 export default function SettingsPage() {
-  const { request } = useGatewayRequest()
+  const { request } = useBridgeRequest()
   const [sections, setSections] = React.useState<ConfigSection[]>([])
   const [loading, setLoading] = React.useState(true)
-  const [saving, setSaving] = React.useState<string | null>(null)
-  const [savedKey, setSavedKey] = React.useState<string | null>(null)
+  const [saving, setSaving] = React.useState(false)
+  const [saved, setSaved] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [showPasswords, setShowPasswords] = React.useState<Record<string, boolean>>({})
 
+  // Load config from Tiger Bridge
   const loadConfig = React.useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const data = await request("config.get", {}) as Record<string, ConfigValue>
+      const data = await request("/api/tiger/config") as Record<string, ConfigValue>
 
       const loadedSections: ConfigSection[] = CONFIG_SECTIONS.map(section => ({
         key: section.key,
@@ -101,7 +81,7 @@ export default function SettingsPage() {
 
       setSections(loadedSections)
     } catch {
-      setError("Failed to load configuration. Is the gateway running?")
+      setError("Failed to load configuration. Is the Tiger Bridge running?")
     } finally {
       setLoading(false)
     }
@@ -127,40 +107,49 @@ export default function SettingsPage() {
     )
   }
 
-  const handleSaveSection = async (section: ConfigSection) => {
-    setSaving(section.key)
+  const handleSave = async () => {
+    setSaving(true)
     setError(null)
-    try {
-      const changedFields = section.fields.filter(
-        f => JSON.stringify(f.value) !== JSON.stringify(f.original)
-      )
+    setSaved(false)
 
-      for (const field of changedFields) {
-        let val = field.value
-        if (field.type === "number") val = Number(val)
-        if (field.type === "boolean") val = val === true || val === "true"
-        await request("config.set", { key: field.path, value: val })
+    try {
+      // Build patch object from all changed fields
+      const patch: Record<string, ConfigValue> = {}
+
+      for (const section of sections) {
+        for (const field of section.fields) {
+          if (JSON.stringify(field.value) !== JSON.stringify(field.original)) {
+            let val = field.value
+            if (field.type === "number") val = Number(val)
+            if (field.type === "boolean") val = val === true || val === "true"
+            patch[field.path] = val
+          }
+        }
       }
 
-      // Update originals
-      setSections(prev =>
-        prev.map(s =>
-          s.key === section.key
-            ? { ...s, fields: s.fields.map(f => ({ ...f, original: f.value })) }
-            : s
+      if (Object.keys(patch).length > 0) {
+        await request("/api/tiger/config", "POST", { patch })
+
+        // Update originals
+        setSections(prev =>
+          prev.map(s => ({
+            ...s,
+            fields: s.fields.map(f => ({ ...f, original: f.value })),
+          }))
         )
-      )
-      setSavedKey(section.key)
-      setTimeout(() => setSavedKey(null), 2000)
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      }
     } catch {
-      setError(`Failed to save ${section.label} settings.`)
+      setError("Failed to save configuration.")
     } finally {
-      setSaving(null)
+      setSaving(false)
     }
   }
 
-  const hasChanges = (section: ConfigSection) =>
-    section.fields.some(f => JSON.stringify(f.value) !== JSON.stringify(f.original))
+  const hasChanges = sections.some(s =>
+    s.fields.some(f => JSON.stringify(f.value) !== JSON.stringify(f.original))
+  )
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-4xl">
@@ -170,12 +159,22 @@ export default function SettingsPage() {
             <Settings2 className="h-6 w-6" />
             Settings
           </h1>
-          <p className="text-muted-foreground">Gateway configuration. Changes are applied live.</p>
+          <p className="text-muted-foreground">Tiger agent configuration. Changes are applied live.</p>
         </div>
-        <Button variant="outline" size="sm" onClick={loadConfig} disabled={loading}>
-          <RefreshCw className={cn("h-4 w-4 mr-1", loading && "animate-spin")} />
-          Reload
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={loadConfig} disabled={loading}>
+            <RefreshCw className={cn("h-4 w-4 mr-1", loading && "animate-spin")} />
+            Reload
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={!hasChanges || saving}>
+            {saving ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-1" />
+            )}
+            {saved ? "Saved!" : "Save Changes"}
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -258,20 +257,6 @@ export default function SettingsPage() {
                   )}
                 </div>
               ))}
-              <div className="flex justify-end pt-2">
-                <Button
-                  size="sm"
-                  disabled={!hasChanges(section) || saving === section.key}
-                  onClick={() => handleSaveSection(section)}
-                >
-                  {saving === section.key ? (
-                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4 mr-1" />
-                  )}
-                  {savedKey === section.key ? "Saved!" : "Save"}
-                </Button>
-              </div>
             </CardContent>
           </Card>
         ))
