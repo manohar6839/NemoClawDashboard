@@ -56,6 +56,18 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'agent', 'system')),
+    content TEXT NOT NULL,
+    -- 'meta' is optional JSON for things like model used, tokens, duration.
+    meta TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+    ON chat_messages (session_id, created_at DESC);
+
   CREATE TABLE IF NOT EXISTS executions (
     id TEXT PRIMARY KEY,
     task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
