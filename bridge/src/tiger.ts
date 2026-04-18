@@ -25,6 +25,19 @@ const GATEWAY_WATCHDOG = "/root/gateway-watchdog.sh";
 // Timeout for commands (30s default, some ops need longer)
 const DEFAULT_TIMEOUT = 30_000;
 
+// ─── Remote mode for local development ──────────────────────────
+// When running this bridge on a dev machine (not the VPS), we need to
+// reach the tiger-openclaw container over SSH. Setting TIGER_REMOTE=true
+// in the env prefixes all docker/host commands with `ssh <TIGER_REMOTE_SSH>`.
+// On the real VPS: TIGER_REMOTE is unset → commands run locally as before.
+const IS_REMOTE = process.env.TIGER_REMOTE === "true";
+const REMOTE_SSH = process.env.TIGER_REMOTE_SSH || "root@100.75.128.45";
+const SSH_PREFIX = IS_REMOTE ? `ssh ${REMOTE_SSH} ` : "";
+
+if (IS_REMOTE) {
+  console.log(`[bridge] REMOTE MODE: docker commands will run via ssh ${REMOTE_SSH}`);
+}
+
 /**
  * Execute a command inside the Tiger container.
  * Commands run directly via docker exec (no kubectl needed).
@@ -33,8 +46,9 @@ export async function execInSandbox(
   command: string,
   timeoutMs = DEFAULT_TIMEOUT
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  // Run command directly inside tiger-openclaw container
-  const fullCmd = `docker exec ${DOCKER_CONTAINER} sh -c ${JSON.stringify(command)}`;
+  // Run command directly inside tiger-openclaw container.
+  // SSH_PREFIX is empty on the VPS, 'ssh root@host ' for local dev mode.
+  const fullCmd = `${SSH_PREFIX}docker exec ${DOCKER_CONTAINER} sh -c ${JSON.stringify(command)}`;
 
   try {
     const { stdout, stderr } = await execAsync(fullCmd, {
@@ -61,7 +75,12 @@ export async function execOnHost(
   timeoutMs = DEFAULT_TIMEOUT
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   try {
-    const { stdout, stderr } = await execAsync(command, {
+    // In remote mode, wrap the command so it runs on the VPS host, not on Mac.
+    // Use single-quoted form to avoid local shell interpreting it.
+    const fullCmd = IS_REMOTE
+      ? `ssh ${REMOTE_SSH} ${JSON.stringify(command)}`
+      : command;
+    const { stdout, stderr } = await execAsync(fullCmd, {
       timeout: timeoutMs,
       maxBuffer: 5 * 1024 * 1024,
     });

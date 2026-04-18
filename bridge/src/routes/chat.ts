@@ -98,7 +98,11 @@ router.post("/", async (req, res) => {
 
     // Use openclaw agent to send a message to the main session
     // Session ID: c1e6a067-7ca5-423b-9506-105db0702997 (agent:main:main)
-    const cmd = `docker exec tiger-openclaw openclaw agent --session-id c1e6a067-7ca5-423b-9506-105db0702997 -m '${escapedMessage}' --json --timeout 120`;
+    // In TIGER_REMOTE mode, prefix with ssh so docker runs on the VPS.
+    const sshPrefix = process.env.TIGER_REMOTE === "true"
+      ? `ssh ${process.env.TIGER_REMOTE_SSH || "root@100.75.128.45"} `
+      : "";
+    const cmd = `${sshPrefix}docker exec tiger-openclaw openclaw agent --session-id c1e6a067-7ca5-423b-9506-105db0702997 -m '${escapedMessage}' --json --timeout 120`;
 
     const tBeforeSpawn = Date.now();
     tSpawn = tBeforeSpawn - tStart;
