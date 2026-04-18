@@ -5,6 +5,7 @@ import {
   Bot,
   Settings2,
   LayoutDashboard,
+  MessageSquare,
   ScrollText,
   CheckSquare,
   DollarSign,
@@ -30,6 +31,11 @@ const navMain = [
     title: "Dashboard",
     url: "/",
     icon: LayoutDashboard,
+  },
+  {
+    title: "Chat",
+    url: "/chat",
+    icon: MessageSquare,
   },
   {
     title: "Projects",

@@ -21,17 +21,3 @@ export async function POST(request: Request) {
   }
 }
 
-// GET /api/tiger/dispatch/status/:taskId
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ taskId: string }> }
-) {
-  const { taskId } = await params;
-  try {
-    const result = await bridgePost(`/tiger/dispatch/status/${taskId}`, {});
-    return NextResponse.json(result);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ ok: false, error: message }, { status: 502 });
-  }
-}

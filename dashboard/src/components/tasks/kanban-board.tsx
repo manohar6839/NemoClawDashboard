@@ -443,13 +443,13 @@ export function KanbanBoard() {
           id: editingTask.id,
           title: editingTask.title,
           description: editingTask.description,
-          status: editingTask.status,
+          status: editingTask.status as string,
           priority: editingTask.priority,
           assigned_agent: editingTask.assigned_agent,
           progress: editingTask.progress,
           tags: editingTask.tags,
         } : null}
-        onSubmit={editingTask ? handleUpdateTask : handleAddTask}
+        onSubmit={editingTask ? handleUpdateTask as any : handleAddTask}
         onDelete={editingTask ? () => handleDeleteTask(editingTask.id) : undefined}
         onRun={editingTask ? () => handleRunTask(editingTask.id) : undefined}
       />
