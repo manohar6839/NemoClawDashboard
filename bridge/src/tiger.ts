@@ -1,10 +1,8 @@
 /**
- * tiger.ts — Core executor for Tiger agent inside Docker→k3s→sandbox
- * 
- * The key insight: Tiger lives 3 layers deep. Every command must traverse:
- *   Host → Docker (openshell-cluster-nemoclaw) → k3s (kubectl exec) → sandbox pod (tiger)
- * 
- * This module wraps that complexity into clean async functions.
+ * tiger.ts — Core executor for Tiger agent inside Docker container
+ *
+ * Tiger runs directly in tiger-openclaw container (no more k3s layers).
+ * Commands are executed via docker exec inside the container.
  */
 
 import { exec, execFile, spawn } from "child_process";
@@ -15,30 +13,28 @@ import { createHash } from "crypto";
 const execAsync = promisify(exec);
 
 // ─── Configuration ───────────────────────────────────────────────
-// These match your known paths from the Tiger setup
-const DOCKER_CONTAINER = "openshell-cluster-nemoclaw";
+// Tiger runs directly in the tiger-openclaw container
+const DOCKER_CONTAINER = "tiger-openclaw";
 const K8S_NAMESPACE = "openshell";
 const POD_NAME = "tiger";
-const OPENCLAW_CONFIG_HOST = "/root/.nemoclaw/openclaw.json";
+const OPENCLAW_CONFIG_HOST = "/root/.openclaw/openclaw.json";
 const CONFIG_HASH_PATH_SANDBOX = "/sandbox/.openclaw/.config-hash";
-const WORKSPACE_SYMLINK = "/root/tiger-workspace";
+const WORKSPACE_SYMLINK = "/var/lib/docker/volumes/tiger_tiger-workspace/_data";
 const GATEWAY_WATCHDOG = "/root/gateway-watchdog.sh";
 
 // Timeout for commands (30s default, some ops need longer)
 const DEFAULT_TIMEOUT = 30_000;
 
 /**
- * Execute a command inside the Tiger sandbox pod.
- * This is the fundamental operation — everything else builds on it.
- * 
- * The full command chain:
- *   docker exec <container> kubectl exec -n <ns> <pod> -- <cmd>
+ * Execute a command inside the Tiger container.
+ * Commands run directly via docker exec (no kubectl needed).
  */
 export async function execInSandbox(
   command: string,
   timeoutMs = DEFAULT_TIMEOUT
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const fullCmd = `docker exec ${DOCKER_CONTAINER} kubectl exec -n ${K8S_NAMESPACE} ${POD_NAME} -- sh -c ${JSON.stringify(command)}`;
+  // Run command directly inside tiger-openclaw container
+  const fullCmd = `docker exec ${DOCKER_CONTAINER} sh -c ${JSON.stringify(command)}`;
 
   try {
     const { stdout, stderr } = await execAsync(fullCmd, {
@@ -97,10 +93,10 @@ export async function getTigerStatus() {
       execInSandbox("cat /proc/meminfo | head -5 && echo '---' && uptime"),
 
       // 4. Last heartbeat content
-      execInSandbox("cat /sandbox/.openclaw-data/workspace/HEARTBEAT.md 2>/dev/null || echo 'NO_HEARTBEAT'"),
+      execInSandbox("cat /home/node/.openclaw/workspace/HEARTBEAT.md 2>/dev/null || echo 'NO_HEARTBEAT'"),
 
       // 5. Agent identity from SOUL.md
-      execInSandbox("head -20 /sandbox/.openclaw-data/workspace/SOUL.md 2>/dev/null || echo 'NO_SOUL'"),
+      execInSandbox("head -20 /home/node/.openclaw/workspace/SOUL.md 2>/dev/null || echo 'NO_SOUL'"),
     ]);
 
   // Parse container state
@@ -133,15 +129,38 @@ export async function getTigerStatus() {
     }
   }
 
-  // Read host config for model info
+  // Read host config for model info.
+  // OpenClaw stores the default agent model at agents.defaults.model.primary
+  // and a list of fallbacks at agents.defaults.model.fallbacks. Some runtime
+  // paths (e.g. channels.telegram) or session overrides may pick a different
+  // model at request time — we also capture the provider list so the UI can
+  // show what's actually available.
   let currentModel = "unknown";
   let fallbackModels: string[] = [];
+  let availableModels: string[] = [];
   try {
     const configRaw = await readFile(OPENCLAW_CONFIG_HOST, "utf-8");
     const config = JSON.parse(configRaw);
-    // Navigate the OpenClaw config structure for model info
-    currentModel = config?.model?.primary || config?.model || "unknown";
-    fallbackModels = config?.model?.fallbacks || [];
+
+    const agentDefaults = config?.agents?.defaults?.model;
+    if (typeof agentDefaults === "string") {
+      currentModel = agentDefaults;
+    } else if (agentDefaults && typeof agentDefaults === "object") {
+      currentModel = agentDefaults.primary || "unknown";
+      fallbackModels = Array.isArray(agentDefaults.fallbacks) ? agentDefaults.fallbacks : [];
+    }
+
+    // Also surface all configured provider/model IDs so the UI shows what's
+    // available, not just what's selected. Format: "provider/model-id"
+    const providers = config?.providers || {};
+    for (const [provName, provCfg] of Object.entries<any>(providers)) {
+      const models = provCfg?.models;
+      if (Array.isArray(models)) {
+        for (const m of models) {
+          if (m?.id) availableModels.push(`${provName}/${m.id}`);
+        }
+      }
+    }
   } catch { /* config not readable */ }
 
   return {
@@ -163,6 +182,7 @@ export async function getTigerStatus() {
     agent: {
       currentModel,
       fallbackModels,
+      availableModels,
       heartbeat: heartbeat.status === "fulfilled" ? heartbeat.value.stdout : null,
       soul: soulMd.status === "fulfilled" ? soulMd.value.stdout : null,
     },
@@ -171,7 +191,7 @@ export async function getTigerStatus() {
 
 /**
  * Read the OpenClaw config from the host.
- * Config lives at /root/.nemoclaw/openclaw.json on the host,
+ * Config lives at /root/.openclaw/openclaw.json on the host,
  * gets mounted into the sandbox at /sandbox/.openclaw/openclaw.json
  */
 export async function getConfig(): Promise<Record<string, any>> {
@@ -194,7 +214,7 @@ export async function updateConfig(patch: Record<string, any>): Promise<void> {
 
   // 3. Backup current config before writing
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  await execOnHost(`cp ${OPENCLAW_CONFIG_HOST} /root/.nemoclaw/backups/openclaw-${timestamp}.json`);
+  await execOnHost(`cp ${OPENCLAW_CONFIG_HOST} /root/.openclaw/backups/openclaw-${timestamp}.json`);
 
   // 4. Write updated config
   await writeFile(OPENCLAW_CONFIG_HOST, configStr, "utf-8");

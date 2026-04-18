@@ -1,153 +1,25 @@
 "use client"
 
 import * as React from "react"
-import { Send, Square, Bot, User, AlertCircle, Loader2 } from "lucide-react"
+import { Send, Square, Bot, User, AlertCircle, Loader2, Eraser } from "lucide-react"
 import ReactMarkdown from "react-markdown"
-
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { useGatewayRequest, useGatewayEvents } from "@/hooks/use-gateway"
-
-type Message = {
-  id: string
-  role: "user" | "agent" | "system"
-  content: string
-  streaming?: boolean
-  timestamp: number
-}
-
-function extractContent(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((block: unknown) => {
-        if (typeof block === "string") return block
-        if (block && typeof block === "object" && "text" in block) return String((block as { text: string }).text)
-        return ""
-      })
-      .filter(Boolean)
-      .join("\n")
-  }
-  if (content && typeof content === "object") {
-    const obj = content as Record<string, unknown>
-    if ("text" in obj) return String(obj.text)
-    if ("content" in obj) return extractContent(obj.content)
-  }
-  return ""
-}
+import { useChatContext } from "@/contexts/chat-context"
 
 export function ChatInterface({ className, ...props }: React.ComponentProps<typeof Card>) {
   const [input, setInput] = React.useState("")
-  const [messages, setMessages] = React.useState<Message[]>([])
+  // Persistent chat state — survives navigation between routes.
+  // See contexts/chat-context.tsx for the rationale.
+  const { messages, setMessages, clearChat } = useChatContext()
   const [sending, setSending] = React.useState(false)
-  const [agentTyping, setAgentTyping] = React.useState(false)
   const scrollRef = React.useRef<HTMLDivElement>(null)
-  const { request } = useGatewayRequest()
-  const streamingContentRef = React.useRef("")
+  const abortRef = React.useRef<AbortController | null>(null)
+  const streamingRef = React.useRef("")
 
-  // Load chat history on mount
-  React.useEffect(() => {
-    request("chat.history", { sessionKey: "agent:main:main", limit: 50 })
-      .then((data: unknown) => {
-        const history = data as { messages?: Array<{ role: string; content: unknown; ts?: number }> }
-        if (history?.messages?.length) {
-          setMessages(
-            history.messages.map((m, i) => ({
-              id: `hist-${i}`,
-              role: m.role === "user" ? "user" : "agent",
-              content: extractContent(m.content),
-              timestamp: m.ts || Date.now(),
-            }))
-          )
-        }
-      })
-      .catch(() => {
-        setMessages([{
-          id: "welcome",
-          role: "agent",
-          content: "Connected to Tarzan via gateway. Send a message to start chatting.",
-          timestamp: Date.now(),
-        }])
-      })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Subscribe to gateway events for streaming responses
-  const { connected } = useGatewayEvents((event, payload) => {
-    const data = payload as Record<string, unknown>
-
-    if (event === "chat") {
-      // Incoming chat message (from other channels or agent completion)
-      const role = (data.role as string) === "user" ? "user" : "agent"
-      const content = extractContent(data.text || data.content || "")
-      if (!content) return
-
-      setMessages(prev => {
-        // Remove any streaming message and add final
-        const filtered = prev.filter(m => !m.streaming)
-        return [...filtered, {
-          id: `chat-${Date.now()}`,
-          role,
-          content,
-          timestamp: Date.now(),
-        }]
-      })
-      setAgentTyping(false)
-      streamingContentRef.current = ""
-    }
-
-    if (event === "agent") {
-      // Streaming agent response chunks
-      const chunk = data.chunk as string | undefined
-      const done = data.done as boolean | undefined
-      const text = data.text as string | undefined
-
-      if (chunk || text) {
-        streamingContentRef.current += (chunk || text || "")
-        setAgentTyping(true)
-
-        setMessages(prev => {
-          const filtered = prev.filter(m => !m.streaming)
-          return [...filtered, {
-            id: "streaming",
-            role: "agent",
-            content: streamingContentRef.current,
-            streaming: true,
-            timestamp: Date.now(),
-          }]
-        })
-      }
-
-      if (done) {
-        setAgentTyping(false)
-        setSending(false)
-        // Finalize streaming message
-        if (streamingContentRef.current) {
-          setMessages(prev => {
-            const filtered = prev.filter(m => !m.streaming)
-            return [...filtered, {
-              id: `agent-${Date.now()}`,
-              role: "agent",
-              content: streamingContentRef.current,
-              timestamp: Date.now(),
-            }]
-          })
-        }
-        streamingContentRef.current = ""
-      }
-    }
-  }, [])
-
-  // Auto-scroll to bottom
   React.useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -161,9 +33,9 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
     const text = input.trim()
     setInput("")
     setSending(true)
-    streamingContentRef.current = ""
+    streamingRef.current = ""
 
-    // Add user message immediately
+    // Add user message
     setMessages(prev => [...prev, {
       id: `user-${Date.now()}`,
       role: "user",
@@ -172,44 +44,165 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
     }])
 
     try {
-      await request("chat.send", {
-        sessionKey: "agent:main:main",
-        message: text,
-        idempotencyKey: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      const controller = new AbortController()
+      abortRef.current = controller
+
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+        signal: controller.signal,
       })
-      // Response will come via SSE events (agent/chat events)
-    } catch {
+
+      if (!res.ok || !res.body) throw new Error("Failed to connect")
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      // Buffer across reads — a single SSE event ("data: ...\n\n") may be
+      // split across TCP chunks. Accumulate, then split on the SSE delimiter.
+      let buffer = ""
+
+      const streamId = `streaming-${Date.now()}`
+
+      while (true) {
+        const { done: readerDone, value } = await reader.read()
+        if (readerDone) break
+
+        // {stream: true} preserves decoder state for multi-byte UTF-8 chars
+        // (e.g. emoji) that happen to land across chunk boundaries.
+        buffer += decoder.decode(value, { stream: true })
+
+        // SSE events end with a blank line (\n\n). Anything after the last
+        // \n\n is a partial event — keep it in `buffer` for the next read.
+        const events = buffer.split("\n\n")
+        buffer = events.pop() || ""
+
+        for (const eventBlock of events) {
+          const dataLine = eventBlock.split("\n").find(l => l.startsWith("data: "))
+          if (!dataLine) continue
+
+          let data: { type: string; content?: string }
+          try {
+            data = JSON.parse(dataLine.slice(6))
+          } catch (err) {
+            // Don't swallow silently — log so real parse bugs are visible.
+            console.warn("[chat] SSE parse error:", err, "line:", dataLine)
+            continue
+          }
+
+          console.log("[chat] event:", data.type, "content:", data.content?.substring(0, 50))
+
+          if (data.type === "status") {
+            // Transient 'Tiger is thinking...' indicator. Do NOT append to
+            // the message content — that was Bug A. Just ensure a streaming
+            // placeholder exists so the UI shows activity.
+            setMessages(prev => {
+              if (prev.some(m => m.streaming)) return prev
+              return [...prev, {
+                id: streamId,
+                role: "agent",
+                content: "",
+                streaming: true,
+                timestamp: Date.now(),
+              }]
+            })
+          } else if (data.type === "chunk") {
+            streamingRef.current += data.content || ""
+            setMessages(prev => {
+              const existing = prev.find(m => m.streaming)
+              if (existing) {
+                return prev.map(m =>
+                  m.streaming ? { ...m, content: streamingRef.current } : m
+                )
+              }
+              return [...prev, {
+                id: streamId,
+                role: "agent",
+                content: streamingRef.current,
+                streaming: true,
+                timestamp: Date.now(),
+              }]
+            })
+          } else if (data.type === "message") {
+            // Non-streaming full message
+            setMessages(prev => {
+              const filtered = prev.filter(m => !m.streaming)
+              return [...filtered, {
+                id: `agent-${Date.now()}`,
+                role: "agent",
+                content: data.content || "",
+                timestamp: Date.now(),
+              }]
+            })
+          } else if (data.type === "done") {
+            // Fall back to data.content if the chunk event somehow didn't
+            // land — Bug D. This is a belt-and-suspenders safety.
+            const finalContent = streamingRef.current || data.content || ""
+            setMessages(prev => {
+              const filtered = prev.filter(m => !m.streaming)
+              if (!finalContent) return filtered
+              return [...filtered, {
+                id: `agent-${Date.now()}`,
+                role: "agent",
+                content: finalContent,
+                timestamp: Date.now(),
+              }]
+            })
+            streamingRef.current = ""
+            setSending(false)
+          } else if (data.type === "error") {
+            setMessages(prev => [...prev.filter(m => !m.streaming), {
+              id: `err-${Date.now()}`,
+              role: "system",
+              content: data.content || "Something went wrong",
+              timestamp: Date.now(),
+            }])
+            setSending(false)
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== "AbortError") {
+        setMessages(prev => [...prev.filter(m => !m.streaming), {
+          id: `err-${Date.now()}`,
+          role: "system",
+          content: "Failed to send message. Is Tiger running?",
+          timestamp: Date.now(),
+        }])
+      }
       setSending(false)
-      setMessages(prev => [...prev, {
-        id: `err-${Date.now()}`,
-        role: "system",
-        content: "Failed to send message. Is the gateway running?",
-        timestamp: Date.now(),
-      }])
     }
+
+    abortRef.current = null
   }
 
-  const handleAbort = async () => {
-    try {
-      await request("chat.abort", { sessionKey: "agent:main:main" })
-    } catch {
-      // ignore
-    }
+  const handleAbort = () => {
+    abortRef.current?.abort()
     setSending(false)
-    setAgentTyping(false)
+    streamingRef.current = ""
+    setMessages(prev => prev.filter(m => !m.streaming))
   }
 
   return (
     <Card className={cn("w-full flex flex-col", className)} {...props}>
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Bot className="h-5 w-5" />
-          Chat
-          <span className={cn(
-            "ml-auto h-2 w-2 rounded-full",
-            connected ? "bg-green-500" : "bg-red-500"
-          )} />
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Bot className="h-5 w-5" />
+            Chat with Tiger
+          </CardTitle>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={clearChat}
+            className="text-xs text-muted-foreground h-7"
+            title="Clear conversation"
+          >
+            <Eraser className="h-3 w-3 mr-1" />
+            Clear
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="flex-1 p-0 min-h-0">
         <ScrollArea className="h-[500px] px-4" ref={scrollRef}>
@@ -235,22 +228,27 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
                     )}
                   </div>
                 )}
-                <div
-                  className={cn(
-                    "rounded-lg px-3 py-2 text-sm",
-                    message.role === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : message.role === "system"
-                      ? "bg-destructive/10 text-destructive flex items-center gap-2 w-full justify-center"
-                      : "bg-muted",
-                    message.streaming ? "border border-primary/30" : ""
-                  )}
-                >
+                <div className={cn(
+                  "rounded-lg px-3 py-2 text-sm",
+                  message.role === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : message.role === "system"
+                    ? "bg-destructive/10 text-destructive flex items-center gap-2 w-full justify-center"
+                    : "bg-muted",
+                  message.streaming ? "border border-primary/30" : ""
+                )}>
                   {message.role === "system" && <AlertCircle className="h-3 w-3" />}
                   {message.role === "agent" ? (
-                    <div className="prose prose-sm prose-invert max-w-none [&>p]:m-0">
-                      <ReactMarkdown>{message.content}</ReactMarkdown>
-                    </div>
+                    // While streaming: render raw text (cheap, one DOM node update per token).
+                    // After streaming completes: render full ReactMarkdown (expensive but
+                    // only happens once). This is what makes the typing feel actually show up.
+                    message.streaming ? (
+                      <div className="whitespace-pre-wrap">{message.content}</div>
+                    ) : (
+                      <div className="prose prose-sm prose-invert max-w-none [&>p]:m-0">
+                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      </div>
+                    )
                   ) : (
                     message.content
                   )}
@@ -260,7 +258,7 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
                 </div>
               </div>
             ))}
-            {agentTyping && !messages.some(m => m.streaming) && (
+            {sending && !messages.some(m => m.streaming) && (
               <div className="flex gap-2">
                 <div className="h-7 w-7 rounded-full bg-muted flex items-center justify-center">
                   <Bot className="h-4 w-4" />
@@ -276,19 +274,19 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
       <CardFooter className="pt-3">
         <form onSubmit={handleSubmit} className="flex w-full items-center space-x-2">
           <Input
-            placeholder={connected ? "Message Tarzan..." : "Gateway offline..."}
+            placeholder="Message Tiger..."
             className="flex-1"
             autoComplete="off"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={!connected || sending}
+            disabled={sending}
           />
           {sending ? (
             <Button type="button" size="icon" variant="destructive" onClick={handleAbort}>
               <Square className="h-4 w-4" />
             </Button>
           ) : (
-            <Button type="submit" size="icon" disabled={!input.trim() || !connected}>
+            <Button type="submit" size="icon" disabled={!input.trim()}>
               <Send className="h-4 w-4" />
             </Button>
           )}

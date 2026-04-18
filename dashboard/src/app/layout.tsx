@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { ModeToggle } from "@/components/mode-toggle"
 import "./globals.css";
 import { Agentation } from 'agentation';
+import { ChatProvider } from "@/contexts/chat-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -19,8 +20,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Command Center",
-  description: "Tarzan's Dashboard for Agent Management",
+  title: "Tiger Command Center",
+  description: "Tiger Agent Management Dashboard",
 };
 
 export default function RootLayout({
@@ -40,14 +41,15 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <SidebarProvider>
+          <ChatProvider>
+            <SidebarProvider>
             <TooltipProvider>
               <AppSidebar />
               <main className="w-full bg-background text-foreground relative">
                 <div className="p-4 flex items-center justify-between border-b border-border bg-sidebar/50 backdrop-blur-sm sticky top-0 z-10">
                   <div className="flex items-center gap-2">
                     <SidebarTrigger />
-                    <h1 className="text-sm font-medium text-muted-foreground">Tarzan's Dashboard</h1>
+                    <h1 className="text-sm font-medium text-muted-foreground">Tiger Dashboard</h1>
                   </div>
                   <ModeToggle />
                 </div>
@@ -57,7 +59,8 @@ export default function RootLayout({
                 <Agentation />
               </main>
             </TooltipProvider>
-          </SidebarProvider>
+            </SidebarProvider>
+          </ChatProvider>
         </ThemeProvider>
       </body>
     </html>

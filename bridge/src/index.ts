@@ -42,7 +42,7 @@ import "./db.js";
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.TIGER_BRIDGE_PORT || "3456", 10);
-const HOST = process.env.TIGER_BRIDGE_HOST || "127.0.0.1"; // Only localhost — Caddy handles HTTPS
+const HOST = process.env.TIGER_BRIDGE_HOST || "0.0.0.0"; // Bind to all interfaces for Docker access
 
 const app = express();
 
@@ -85,6 +85,11 @@ app.use("/tiger/files", filesRouter);  // Same router handles both /workspace an
 app.use("/tiger/projects", projectsRouter);
 app.use("/tiger/tasks", tasksRouter);
 app.use("/tiger/dispatch", dispatchRouter);
+app.use("/tiger/chat", (await import("./routes/chat.js")).default);
+
+// Gateway proxy — forwards to gateway inside Tiger container
+// This is needed because the dashboard runs in Dokploy which can't reach the container directly
+app.use("/api/gateway", (await import("./routes/gateway.js")).default);
 
 // ─── Error handling ─────────────────────────────────────────────────────────
 

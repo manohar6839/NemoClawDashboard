@@ -43,6 +43,7 @@ interface TigerStatus {
   agent: {
     currentModel: string
     fallbackModels: string[]
+    availableModels?: string[]
     heartbeat: string | null
     soul: string | null
   }
@@ -324,6 +325,20 @@ export default function DashboardPage() {
                   <div className="space-y-1">
                     {status.agent.fallbackModels.map((model, i) => (
                       <div key={i} className="p-2 rounded-md border border-border bg-background/50 text-sm font-mono">
+                        {model}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Available Models (from providers config) */}
+              {status?.agent?.availableModels && status.agent.availableModels.length > 0 && (
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">Available Models</div>
+                  <div className="space-y-1">
+                    {status.agent.availableModels.map((model, i) => (
+                      <div key={i} className="p-2 rounded-md border border-border/50 bg-background/30 text-xs font-mono text-muted-foreground">
                         {model}
                       </div>
                     ))}
