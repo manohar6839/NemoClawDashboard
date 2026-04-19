@@ -95,7 +95,7 @@ if ! git diff-index --quiet HEAD --; then
 fi
 
 # [3] Untracked files of note (warn only)
-UNTRACKED=$(git status --short | grep '^??' | wc -l | xargs)
+UNTRACKED=$(git status --short | grep -c '^??' || true)
 if [ "$UNTRACKED" -gt 0 ]; then
   warn "$UNTRACKED untracked file(s) exist — they won't be deployed."
 fi
