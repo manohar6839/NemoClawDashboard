@@ -19,7 +19,7 @@ import db from "../db.js";
 
 // The main Tiger session — matches the hardcoded session in chat.send below.
 // Keep this constant in sync with the --session-id used by openclaw agent.
-const DEFAULT_SESSION_ID = "agent:main:main";
+const DEFAULT_SESSION_ID = "c1e6a067-7ca5-423b-9506-105db0702997";
 
 const insertMessage = db.prepare(`
   INSERT INTO chat_messages (session_id, role, content, meta)
@@ -97,12 +97,12 @@ router.post("/", async (req, res) => {
     const escapedMessage = message.replace(/'/g, "'\\''");
 
     // Use openclaw agent to send a message to the main session
-    // Session ID: agent:main:main (agent:main:main)
+    // Session ID: c1e6a067-7ca5-423b-9506-105db0702997 (agent:main:main)
     // In TIGER_REMOTE mode, prefix with ssh so docker runs on the VPS.
     const sshPrefix = process.env.TIGER_REMOTE === "true"
       ? `ssh ${process.env.TIGER_REMOTE_SSH || "root@100.75.128.45"} `
       : "";
-    const cmd = `${sshPrefix}docker exec tiger-openclaw openclaw agent --session-id agent:main:main -m '${escapedMessage}' --json --timeout 120`;
+    const cmd = `${sshPrefix}docker exec tiger-openclaw openclaw agent --session-id c1e6a067-7ca5-423b-9506-105db0702997 -m '${escapedMessage}' --json --timeout 120`;
 
     const tBeforeSpawn = Date.now();
     tSpawn = tBeforeSpawn - tStart;

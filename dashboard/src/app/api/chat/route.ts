@@ -1,137 +1,120 @@
 /**
- * API route: POST /api/chat
- * Sends chat messages via Tiger Bridge -> OpenClaw CLI
+ * /api/chat — chat send endpoint, now with real WS-based streaming.
+ *
+ * Replaces the previous bridge → docker exec → fake-typing chain.
+ *
+ * Request:  POST { message: string, sessionKey?: string }
+ * Response: SSE stream of `data: { type, content }` events
+ *           types: status | chunk | done | error  (matches existing client parser)
+ *
+ * Persistence: user message stored BEFORE LLM call (so it's not lost on failure);
+ *              agent reply stored after final token via bridge /tiger/chat/persist.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { streamAgentRun, DEFAULT_SESSION_KEY } from "@/lib/openclaw-ws";
 
 const BRIDGE_URL = process.env.TIGER_BRIDGE_URL || "http://localhost:3456";
 const BRIDGE_TOKEN = process.env.TIGER_BRIDGE_TOKEN || "";
 
-export const maxDuration = 120;
+export const maxDuration = 180;
+export const dynamic = "force-dynamic";
 
-export async function POST(request: NextRequest) {
-  const { message } = await request.json();
-
-  if (!message) {
-    return NextResponse.json({ error: "message is required" }, { status: 400 });
-  }
-
-  // End-to-end timing: measure the full /api/chat call so we can compare
-  // against the bridge's own timing (data.timing) to find overhead.
-  const t0 = Date.now();
-
+async function persistMessage(role: "user" | "agent", content: string, sessionKey: string, meta?: any) {
+  // Best-effort persistence; never block the chat response on this.
   try {
-    // Call the bridge
-    const response = await fetch(`${BRIDGE_URL}/tiger/chat`, {
+    await fetch(`${BRIDGE_URL}/tiger/chat/persist`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${BRIDGE_TOKEN}`,
+        Authorization: `Bearer ${BRIDGE_TOKEN}`,
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ role, content, sessionId: sessionKey, meta: meta || {} }),
     });
+  } catch (err) {
+    console.warn("[chat] persist failed:", role, (err as Error).message);
+  }
+}
 
-    const tBridgeDone = Date.now();
-    const data = await response.json();
+export async function POST(request: NextRequest) {
+  const body = await request.json().catch(() => ({}));
+  const message: string = body?.message;
+  const sessionKey: string = body?.sessionKey || DEFAULT_SESSION_KEY;
 
-    if (data?.timing) {
-      console.log(
-        `[chat.timing] bridge: ${JSON.stringify(data.timing)} | dashboard: bridge_call=${tBridgeDone - t0}ms`
-      );
-    }
+  if (!message || typeof message !== "string") {
+    return new Response(JSON.stringify({ error: "message is required" }), {
+      status: 400, headers: { "Content-Type": "application/json" },
+    });
+  }
 
-    console.log("[chat] Bridge response:", JSON.stringify(data).substring(0, 500));
+  // Persist user message NOW, before the LLM call. If the call fails, the
+  // history still records what the user said.
+  await persistMessage("user", message, sessionKey);
 
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: data.error || "Chat failed" },
-        { status: response.status }
-      );
-    }
+  const t0 = Date.now();
+  const encoder = new TextEncoder();
 
-    // Extract the text response - OpenClaw returns in several possible formats
-    let text = "";
+  /**
+   * Build the SSE stream.
+   * The wire format `data: {"type":"chunk","content":"..."}\n\n` matches what
+   * chat-interface.tsx already parses. Types we emit:
+   *   status  (the "thinking" indicator on accept ack)
+   *   chunk   (each assistant delta from the gateway)
+   *   done    (terminal — full text + meta, persists the agent reply)
+   *   error   (anything goes wrong, including handshake failures)
+   */
+  const stream = new ReadableStream({
+    async start(controller) {
+      const sse = (obj: { type: string; content?: string; meta?: any }) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      };
 
-    if (data.response?.result?.payloads?.[0]?.text) {
-      text = data.response.result.payloads[0].text;
-    } else if (data.response?.payloads?.[0]?.text) {
-      text = data.response.payloads[0].text;
-    } else if (data.response?.summary) {
-      text = data.response.summary;
-    } else if (data.response?.text) {
-      text = data.response.text;
-    } else if (data.text) {
-      text = data.text;
-    } else {
-      // Fallback: stringify the whole response for debugging
-      text = JSON.stringify(data);
-    }
+      try {
+        let fullText = "";
+        let meta: any = undefined;
 
-    console.log("[chat] Extracted text:", text.substring(0, 200));
-
-    // Return as SSE with word-by-word streaming.
-    //
-    // WHY SIMULATE STREAMING?
-    // The bridge gives us the entire reply in one shot (LLM call completes
-    // before the process returns). That means without this code the whole
-    // answer pops in at once — feels sluggish even though the infra is fine.
-    // Splitting on whitespace and drip-feeding gives the UI a "typing" feel
-    // without changing the backend. Total time until done is identical.
-    //
-    // When true token-level streaming is wired in the bridge (Phase 3), we
-    // can swap this out for real chunks from openclaw's event stream.
-    const encoder = new TextEncoder();
-    const words = text.split(/(\s+)/); // keep whitespace tokens → smooth flow
-    // ~60 words-per-second cadence ≈ 16ms per word. Tune to taste.
-    const WORD_DELAY_MS = 25; // 40 wps — smooth typing feel with frame headroom
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        // Send status marker first so UI can show the thinking indicator.
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: "status", content: "" })}\n\n`
-          )
-        );
-
-        // Drip-feed word tokens. Each is a "chunk" that appends to the
-        // streaming message bubble on the client.
-        for (const word of words) {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ type: "chunk", content: word })}\n\n`
-            )
-          );
-          if (WORD_DELAY_MS > 0) {
-            await new Promise((resolve) => setTimeout(resolve, WORD_DELAY_MS));
+        for await (const ev of streamAgentRun({ message, sessionKey })) {
+          if (ev.kind === "status") {
+            sse({ type: "status", content: "" });
+          } else if (ev.kind === "chunk") {
+            fullText += ev.content;
+            sse({ type: "chunk", content: ev.content });
+          } else if (ev.kind === "done") {
+            // Prefer the gateway's authoritative final text over our delta accumulation.
+            fullText = ev.content || fullText;
+            meta = ev.meta;
+            sse({ type: "done", content: fullText });
+          } else if (ev.kind === "error") {
+            sse({ type: "error", content: ev.content });
           }
         }
 
-        // Final done event carries the full text as a safety fallback
-        // (see the Bug D fix in chat-interface.tsx).
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: "done", content: text })}\n\n`
-          )
-        );
+        const dt = Date.now() - t0;
+        console.log(`[chat] sessionKey=${sessionKey} duration=${dt}ms chars=${fullText.length}`);
 
+        // Persist the agent reply AFTER streaming is complete.
+        if (fullText) {
+          await persistMessage("agent", fullText, sessionKey, {
+            ...meta,
+            durationMs: dt,
+          });
+        }
+      } catch (err: any) {
+        console.error("[chat] stream error:", err);
+        sse({ type: "error", content: err?.message || "stream failed" });
+      } finally {
         controller.close();
-      },
-    });
+      }
+    },
+  });
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
-  } catch (err: any) {
-    console.error("[chat] Error:", err.message);
-    return NextResponse.json(
-      { error: "Failed to communicate with Tiger Bridge" },
-      { status: 500 }
-    );
-  }
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      // Disable nginx-style buffering when behind a proxy.
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

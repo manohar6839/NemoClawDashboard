@@ -1,10 +1,7 @@
 "use client"
 
 import * as React from "react"
-import {
-  Send, Square, Bot, User, AlertCircle, Loader2, Eraser,
-  Plus, ChevronDown, Trash2,
-} from "lucide-react"
+import { Send, Square, Bot, User, AlertCircle, Loader2, Eraser } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -15,37 +12,19 @@ import { useChatContext } from "@/contexts/chat-context"
 
 export function ChatInterface({ className, ...props }: React.ComponentProps<typeof Card>) {
   const [input, setInput] = React.useState("")
-  const {
-    messages, setMessages, clearChat,
-    currentSessionKey, sessions, selectSession, newSession, deleteSession, refreshSessions,
-  } = useChatContext()
+  // Persistent chat state — survives navigation between routes.
+  // See contexts/chat-context.tsx for the rationale.
+  const { messages, setMessages, clearChat } = useChatContext()
   const [sending, setSending] = React.useState(false)
-  const [dropdownOpen, setDropdownOpen] = React.useState(false)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const abortRef = React.useRef<AbortController | null>(null)
   const streamingRef = React.useRef("")
-  const dropdownRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages])
-
-  // Close dropdown on outside click
-  React.useEffect(() => {
-    if (!dropdownOpen) return
-    const onClick = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", onClick)
-    return () => document.removeEventListener("mousedown", onClick)
-  }, [dropdownOpen])
-
-  const currentLabel = sessions.find(s => s.key === currentSessionKey)?.label
-    || (currentSessionKey === "agent:main:main" ? "Main" : "Chat")
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -56,6 +35,7 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
     setSending(true)
     streamingRef.current = ""
 
+    // Add user message
     setMessages(prev => [...prev, {
       id: `user-${Date.now()}`,
       role: "user",
@@ -70,7 +50,7 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, sessionKey: currentSessionKey }),
+        body: JSON.stringify({ message: text }),
         signal: controller.signal,
       })
 
@@ -78,13 +58,22 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
+      // Buffer across reads — a single SSE event ("data: ...\n\n") may be
+      // split across TCP chunks. Accumulate, then split on the SSE delimiter.
       let buffer = ""
+
       const streamId = `streaming-${Date.now()}`
 
       while (true) {
         const { done: readerDone, value } = await reader.read()
         if (readerDone) break
+
+        // {stream: true} preserves decoder state for multi-byte UTF-8 chars
+        // (e.g. emoji) that happen to land across chunk boundaries.
         buffer += decoder.decode(value, { stream: true })
+
+        // SSE events end with a blank line (\n\n). Anything after the last
+        // \n\n is a partial event — keep it in `buffer` for the next read.
         const events = buffer.split("\n\n")
         buffer = events.pop() || ""
 
@@ -96,12 +85,17 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
           try {
             data = JSON.parse(dataLine.slice(6))
           } catch (err) {
+            // Don't swallow silently — log so real parse bugs are visible.
             console.warn("[chat] SSE parse error:", err, "line:", dataLine)
             continue
           }
 
+          console.log("[chat] event:", data.type, "content:", data.content?.substring(0, 50))
+
           if (data.type === "status") {
-            // Show streaming placeholder so the typing indicator appears.
+            // Transient 'Tiger is thinking...' indicator. Do NOT append to
+            // the message content — that was Bug A. Just ensure a streaming
+            // placeholder exists so the UI shows activity.
             setMessages(prev => {
               if (prev.some(m => m.streaming)) return prev
               return [...prev, {
@@ -129,7 +123,20 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
                 timestamp: Date.now(),
               }]
             })
+          } else if (data.type === "message") {
+            // Non-streaming full message
+            setMessages(prev => {
+              const filtered = prev.filter(m => !m.streaming)
+              return [...filtered, {
+                id: `agent-${Date.now()}`,
+                role: "agent",
+                content: data.content || "",
+                timestamp: Date.now(),
+              }]
+            })
           } else if (data.type === "done") {
+            // Fall back to data.content if the chunk event somehow didn't
+            // land — Bug D. This is a belt-and-suspenders safety.
             const finalContent = streamingRef.current || data.content || ""
             setMessages(prev => {
               const filtered = prev.filter(m => !m.streaming)
@@ -143,8 +150,6 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
             })
             streamingRef.current = ""
             setSending(false)
-            // Refresh session list so updatedAt and messageCount reflect this turn.
-            refreshSessions()
           } else if (data.type === "error") {
             setMessages(prev => [...prev.filter(m => !m.streaming), {
               id: `err-${Date.now()}`,
@@ -167,6 +172,7 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
       }
       setSending(false)
     }
+
     abortRef.current = null
   }
 
@@ -180,84 +186,24 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
   return (
     <Card className={cn("w-full flex flex-col", className)} {...props}>
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2 text-base min-w-0">
-            <Bot className="h-5 w-5 flex-shrink-0" />
-            <span className="truncate">Chat with Tiger</span>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Bot className="h-5 w-5" />
+            Chat with Tiger
           </CardTitle>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            {/* Sessions dropdown — flavor C: button + dropdown */}
-            <div ref={dropdownRef} className="relative">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setDropdownOpen(o => !o)}
-                className="h-7 text-xs gap-1 px-2"
-                title="Switch chat session"
-              >
-                <span className="max-w-[100px] truncate">{currentLabel}</span>
-                <ChevronDown className="h-3 w-3" />
-              </Button>
-              {dropdownOpen && (
-                <div className="absolute right-0 top-8 z-20 min-w-[220px] bg-popover border rounded-md shadow-lg overflow-hidden">
-                  <div className="py-1 max-h-[280px] overflow-y-auto">
-                    {sessions.length === 0 && (
-                      <div className="px-3 py-2 text-xs text-muted-foreground">No sessions yet</div>
-                    )}
-                    {sessions.map(s => (
-                      <div
-                        key={s.key}
-                        className={cn(
-                          "flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-accent cursor-pointer",
-                          s.key === currentSessionKey && "bg-accent"
-                        )}
-                        onClick={() => { selectSession(s.key); setDropdownOpen(false) }}
-                      >
-                        <span className="truncate">{s.label}</span>
-                        {!s.isDefault && (
-                          <button
-                            type="button"
-                            className="text-muted-foreground hover:text-destructive flex-shrink-0"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (confirm(`Delete session "${s.label}"?`)) deleteSession(s.key)
-                            }}
-                            title="Delete session"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => newSession()}
-              className="h-7 px-2"
-              title="Start a new chat session"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={clearChat}
-              className="h-7 px-2 text-muted-foreground"
-              title="Clear current conversation"
-            >
-              <Eraser className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={clearChat}
+            className="text-xs text-muted-foreground h-7"
+            title="Clear conversation"
+          >
+            <Eraser className="h-3 w-3 mr-1" />
+            Clear
+          </Button>
         </div>
       </CardHeader>
-
       <CardContent className="flex-1 p-0 min-h-0">
         <ScrollArea className="h-[500px] px-4" ref={scrollRef}>
           <div className="space-y-4 py-2">
@@ -293,6 +239,9 @@ export function ChatInterface({ className, ...props }: React.ComponentProps<type
                 )}>
                   {message.role === "system" && <AlertCircle className="h-3 w-3" />}
                   {message.role === "agent" ? (
+                    // While streaming: render raw text (cheap, one DOM node update per token).
+                    // After streaming completes: render full ReactMarkdown (expensive but
+                    // only happens once). This is what makes the typing feel actually show up.
                     message.streaming ? (
                       <div className="whitespace-pre-wrap">{message.content}</div>
                     ) : (

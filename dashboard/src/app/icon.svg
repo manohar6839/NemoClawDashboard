@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="tg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <!-- Dark background with rounded corners -->
+  <rect width="32" height="32" rx="6" fill="#1a1a2e"/>
+  <!-- Bold "T" with orange gradient -->
+  <text x="16" y="23" font-family="Arial Black, sans-serif" font-size="20" font-weight="900" fill="url(#tg)" text-anchor="middle">T</text>
+  <!-- Tiger stripes — left side, fading down -->
+  <rect x="4" y="4"  width="5" height="3" rx="1" fill="#f97316" opacity="0.7"/>
+  <rect x="4" y="9"  width="5" height="3" rx="1" fill="#f97316" opacity="0.5"/>
+  <rect x="4" y="14" width="5" height="3" rx="1" fill="#f97316" opacity="0.3"/>
+  <!-- Tiger stripes — right side, fading down -->
+  <rect x="23" y="4"  width="5" height="3" rx="1" fill="#f97316" opacity="0.7"/>
+  <rect x="23" y="9"  width="5" height="3" rx="1" fill="#f97316" opacity="0.5"/>
+  <rect x="23" y="14" width="5" height="3" rx="1" fill="#f97316" opacity="0.3"/>
+</svg>

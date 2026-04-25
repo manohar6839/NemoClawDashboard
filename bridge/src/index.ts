@@ -30,11 +30,13 @@ import statusRouter from "./routes/status.js";
 import logsRouter from "./routes/logs.js";
 import execRouter from "./routes/exec.js";
 import configRouter from "./routes/config.js";
+import modelsRouter from "./routes/models.js";
 import restartRouter from "./routes/restart.js";
 import filesRouter from "./routes/files.js";
 import projectsRouter from "./routes/projects.js";
 import tasksRouter from "./routes/tasks.js";
 import dispatchRouter from "./routes/dispatch.js";
+import agentsRouter from "./routes/agents.js";
 import { initWatcher } from "./watcher.js";
 
 // Import db to ensure it's initialized
@@ -77,6 +79,7 @@ app.use("/tiger/status", statusRouter);
 app.use("/tiger/logs", logsRouter);    // SSE stream
 app.use("/tiger/exec", execRouter);
 app.use("/tiger/config", configRouter);
+app.use("/tiger/config/models", modelsRouter);
 app.use("/tiger/restart", restartRouter);
 app.use("/tiger/workspace", filesRouter);
 app.use("/tiger/files", filesRouter);  // Same router handles both /workspace and /files/:path
@@ -85,6 +88,7 @@ app.use("/tiger/files", filesRouter);  // Same router handles both /workspace an
 app.use("/tiger/projects", projectsRouter);
 app.use("/tiger/tasks", tasksRouter);
 app.use("/tiger/dispatch", dispatchRouter);
+app.use("/tiger/agents", agentsRouter);
 app.use("/tiger/chat", (await import("./routes/chat.js")).default);
 
 // Gateway proxy — forwards to gateway inside Tiger container

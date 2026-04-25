@@ -69,6 +69,14 @@ export default function DashboardPage() {
     refreshInterval: 5000,
     revalidateOnFocus: true,
   })
+  // Agent activity — used for "Last Activity" row in health card
+  const { data: agentsData } = useSWR<{ ok: boolean; agents: { lastActivity: number }[] }>(
+    '/api/tiger/agents', fetcher, { refreshInterval: 30000 }
+  )
+  const lastActivity = React.useMemo(() => {
+    const ts = agentsData?.agents?.map(a => a.lastActivity).filter(Boolean) ?? []
+    return ts.length > 0 ? Math.max(...ts) : 0
+  }, [agentsData])
   const { request } = useBridgeRequest()
   const [restarting, setRestarting] = React.useState(false)
   const [restartSuccess, setRestartSuccess] = React.useState(false)
@@ -100,7 +108,7 @@ export default function DashboardPage() {
             <AlertCircle className="h-5 w-5 shrink-0" />
             <div>
               <span className="font-semibold">Tiger Crashed</span>
-              <span className="text-sm text-red-400/80 ml-2">(exit code 255 — MiniMax API unreachable)</span>
+              <span className="text-sm text-red-400/80 ml-2">{`(exit code 255 — ${status?.agent?.currentModel ?? "API"} unreachable)`}</span>
             </div>
           </div>
           <Button
@@ -278,6 +286,24 @@ export default function DashboardPage() {
                 <span>{formatUptime(status?.container?.startedAt || "")}</span>
               </div>
 
+              {/* Last Activity — most recent agent file write */}
+              <div className="p-3 rounded-md border border-border bg-background/50 text-sm flex justify-between items-center">
+                <span className="text-muted-foreground">Last Activity</span>
+                <span className="text-xs tabular-nums">
+                  {lastActivity > 0
+                    ? (() => {
+                        const diff = Date.now() - lastActivity
+                        const m = Math.floor(diff / 60000)
+                        if (m < 1)  return "just now"
+                        if (m < 60) return `${m}m ago`
+                        const h = Math.floor(m / 60)
+                        if (h < 24) return `${h}h ${m % 60}m ago`
+                        return `${Math.floor(h / 24)}d ago`
+                      })()
+                    : "—"}
+                </span>
+              </div>
+
               {/* Restart Button */}
               <div className="pt-2 flex justify-end">
                 <Button
@@ -314,8 +340,21 @@ export default function DashboardPage() {
               <div className="p-4 rounded-lg border border-primary/30 bg-primary/5">
                 <div className="text-xs font-medium text-muted-foreground mb-1 uppercase tracking-wider">Primary Model</div>
                 <div className="font-semibold text-base">
-                  {isLoading ? "..." : status?.agent?.currentModel || "Not configured"}
+                  {isLoading ? "..." : (() => {
+                    const m = status?.agent?.currentModel || ""
+                    if (!m) return "Not configured"
+                    // openrouter/provider/model-name:tag → "model-name" + badge
+                    const parts = m.split("/")
+                    const modelSlug = parts[parts.length - 1].replace(/:.*$/, "")
+                    const via = parts.length >= 2 ? parts[0] : null
+                    return modelSlug || m
+                  })()}
                 </div>
+                {!isLoading && status?.agent?.currentModel && (
+                  <div className="text-xs text-muted-foreground mt-1 font-mono truncate">
+                    {status.agent.currentModel}
+                  </div>
+                )}
               </div>
 
               {/* Fallback Models */}

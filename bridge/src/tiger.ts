@@ -17,7 +17,9 @@ const execAsync = promisify(exec);
 const DOCKER_CONTAINER = "tiger-openclaw";
 const K8S_NAMESPACE = "openshell";
 const POD_NAME = "tiger";
-const OPENCLAW_CONFIG_HOST = "/root/.openclaw/openclaw.json";
+// Real config lives in the Docker named volume, NOT on the host root path
+const OPENCLAW_CONFIG_HOST = "/var/lib/docker/volumes/tiger_tiger-config/_data/openclaw.json";
+const OPENCLAW_MODELS_HOST = "/var/lib/docker/volumes/tiger_tiger-config/_data/agents/main/agent/models.json";
 const CONFIG_HASH_PATH_SANDBOX = "/sandbox/.openclaw/.config-hash";
 const WORKSPACE_SYMLINK = "/var/lib/docker/volumes/tiger_tiger-workspace/_data";
 const GATEWAY_WATCHDOG = "/root/gateway-watchdog.sh";
@@ -158,25 +160,30 @@ export async function getTigerStatus() {
   let fallbackModels: string[] = [];
   let availableModels: string[] = [];
   try {
-    const configRaw = await readFile(OPENCLAW_CONFIG_HOST, "utf-8");
-    const config = JSON.parse(configRaw);
+    // Read config from INSIDE the container — the host copy at
+    // OPENCLAW_CONFIG_HOST can be stale if Tiger has updated its config live.
+    const { stdout: configRaw, exitCode } = await execInSandbox(
+      "cat /home/node/.openclaw/openclaw.json 2>/dev/null"
+    );
+    if (exitCode === 0 && configRaw) {
+      const config = JSON.parse(configRaw);
 
-    const agentDefaults = config?.agents?.defaults?.model;
-    if (typeof agentDefaults === "string") {
-      currentModel = agentDefaults;
-    } else if (agentDefaults && typeof agentDefaults === "object") {
-      currentModel = agentDefaults.primary || "unknown";
-      fallbackModels = Array.isArray(agentDefaults.fallbacks) ? agentDefaults.fallbacks : [];
-    }
+      const agentDefaults = config?.agents?.defaults?.model;
+      if (typeof agentDefaults === "string") {
+        currentModel = agentDefaults;
+      } else if (agentDefaults && typeof agentDefaults === "object") {
+        currentModel = agentDefaults.primary || "unknown";
+        fallbackModels = Array.isArray(agentDefaults.fallbacks) ? agentDefaults.fallbacks : [];
+      }
 
-    // Also surface all configured provider/model IDs so the UI shows what's
-    // available, not just what's selected. Format: "provider/model-id"
-    const providers = config?.providers || {};
-    for (const [provName, provCfg] of Object.entries<any>(providers)) {
-      const models = provCfg?.models;
-      if (Array.isArray(models)) {
-        for (const m of models) {
-          if (m?.id) availableModels.push(`${provName}/${m.id}`);
+      // Surface available models from models.providers section
+      const providers = config?.models?.providers || config?.providers || {};
+      for (const [provName, provCfg] of Object.entries<any>(providers)) {
+        const models = (provCfg as any)?.models;
+        if (Array.isArray(models)) {
+          for (const m of models) {
+            if (m?.id) availableModels.push(`${provName}/${m.id}`);
+          }
         }
       }
     }
@@ -224,23 +231,55 @@ export async function getConfig(): Promise<Record<string, any>> {
  * Previously this was a manual step that caused repeated failures.
  */
 export async function updateConfig(patch: Record<string, any>): Promise<void> {
-  // 1. Read current config
+  // 1. Read current config from the Docker volume (the real runtime config)
   const current = await getConfig();
 
-  // 2. Deep merge the patch (shallow for now, can enhance later)
+  // 2. Deep-merge the patch
   const merged = deepMerge(current, patch);
   const configStr = JSON.stringify(merged, null, 2);
 
-  // 3. Backup current config before writing
+  // 3. Backup before writing (in the volume directory)
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  await execOnHost(`cp ${OPENCLAW_CONFIG_HOST} /root/.openclaw/backups/openclaw-${timestamp}.json`);
+  const backupPath = OPENCLAW_CONFIG_HOST.replace("openclaw.json", `openclaw-${timestamp}.bak.json`);
+  await execOnHost(`cp ${OPENCLAW_CONFIG_HOST} ${backupPath} 2>/dev/null || true`);
 
-  // 4. Write updated config
+  // 4. Write back to the volume file — no hash regeneration needed in OpenClaw v2026
   await writeFile(OPENCLAW_CONFIG_HOST, configStr, "utf-8");
+}
 
-  // 5. Regenerate config hash — the step that was always forgotten!
-  const hash = createHash("sha256").update(configStr).digest("hex");
-  await execInSandbox(`echo '${hash}' > ${CONFIG_HASH_PATH_SANDBOX}`);
+
+/**
+ * Read the available models list from the agent models registry.
+ * Returns an array of { id, name, provider, reasoning, contextWindow } objects.
+ */
+export async function readModels(): Promise<{
+  id: string; name: string; provider: string;
+  reasoning: boolean; contextWindow: number; cost?: { input: number; output: number }
+}[]> {
+  try {
+    const raw = await readFile(OPENCLAW_MODELS_HOST, "utf-8");
+    const data = JSON.parse(raw);
+    const results: any[] = [];
+    const providers: Record<string, any> = data?.providers ?? {};
+    for (const [provName, provCfg] of Object.entries<any>(providers)) {
+      for (const model of (provCfg.models ?? [])) {
+        const rawId = model.id as string;
+        // Normalise to "provider/id" form
+        const id = rawId.includes("/") ? rawId : `${provName}/${rawId}`;
+        results.push({
+          id,
+          name: model.name ?? rawId,
+          provider: provName,
+          reasoning: model.reasoning ?? false,
+          contextWindow: model.contextWindow ?? 0,
+          cost: model.cost,
+        });
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
 }
 
 /** Deep merge helper — second object wins on conflicts */

@@ -1,234 +1,223 @@
 /**
- * Workspace Page — File browser for Tiger agent's workspace
+ * workspace/page.tsx — Per-agent file browser with preview
  *
- * Lists files from the Tiger Bridge's workspace API and provides
- * a file viewer for reading file contents.
+ * Layout:
+ *   Agent chip row (top)
+ *   Tabs: [Files] [Activity]
+ *     Files: split-pane — file tree (left) + file preview (right)
+ *     Activity: recent cross-agent changes feed
  */
 
 "use client"
 
 import * as React from "react"
-import { Folder, FileText, ChevronRight, Home, ArrowLeft, Loader2 } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { useBridgeRequest } from "@/hooks/use-bridge"
-import { cn } from "@/lib/utils"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { AgentChipRow, AgentInfo } from "@/components/workspace/agent-chip-row"
+import { FileTree, FileItem } from "@/components/workspace/file-tree"
+import { FilePreview } from "@/components/workspace/file-preview"
+import { ActivityFeed, ActivityEvent } from "@/components/workspace/activity-feed"
 
-interface WorkspaceFile {
-  name: string
-  type: "file" | "directory"
-  size?: number
-  modified?: string
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface FileContent {
   ok: boolean
   path: string
   content: string
+  encoding: "utf8" | "base64"
   size: number
+  mime: string
 }
 
-function formatSize(bytes?: number): string {
-  if (!bytes) return "—"
-  if (bytes < 1024) return `${bytes}B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function apiFetch<T>(url: string): Promise<T> {
+  const res = await fetch(url, { cache: "no-store" })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<T>
 }
 
-function getFileIcon(filename: string) {
-  const ext = filename.split(".").pop()?.toLowerCase()
-  const codeExts = ["ts", "tsx", "js", "jsx", "py", "sh", "json", "md", "yaml", "yml", "toml"]
-  if (ext && codeExts.includes(ext)) return "code"
-  if (ext === "md") return "markdown"
-  return "text"
-}
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function WorkspacePage() {
-  const { request, loading } = useBridgeRequest()
+  // Agent list
+  const [agents, setAgents] = React.useState<AgentInfo[]>([])
+  const [agentsLoading, setAgentsLoading] = React.useState(true)
+
+  // Active agent selection (null = "All" → show Tiger/main)
+  const [activeAgentId, setActiveAgentId] = React.useState<string | null>(null)
+
+  // File tree state
+  const [treeItems, setTreeItems] = React.useState<FileItem[]>([])
   const [currentPath, setCurrentPath] = React.useState("")
-  const [files, setFiles] = React.useState<WorkspaceFile[]>([])
+  const [treeLoading, setTreeLoading] = React.useState(false)
+
+  // File preview state
   const [selectedFile, setSelectedFile] = React.useState<string | null>(null)
   const [fileContent, setFileContent] = React.useState<FileContent | null>(null)
-  const [loadingFiles, setLoadingFiles] = React.useState(false)
-  const [loadingContent, setLoadingContent] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = React.useState(false)
 
-  // Load directory contents
-  const loadDirectory = React.useCallback(async (path: string) => {
-    setLoadingFiles(true)
-    setError(null)
-    try {
-      const url = path ? `/api/tiger/workspace?path=${encodeURIComponent(path)}` : "/api/tiger/workspace"
-      const data = await request(url) as { ok: boolean; files?: WorkspaceFile[] }
-      if (data.ok && data.files) {
-        setFiles(data.files)
-        setCurrentPath(path)
-      } else {
-        setError("Failed to load directory")
-      }
-    } catch (e: unknown) {
-      setError("Failed to load workspace")
-    } finally {
-      setLoadingFiles(false)
-    }
-  }, [request])
+  // Activity feed
+  const [activityEvents, setActivityEvents] = React.useState<ActivityEvent[]>([])
+  const [activityLoading, setActivityLoading] = React.useState(false)
 
-  // Load file content
-  const loadFile = React.useCallback(async (filename: string) => {
-    setLoadingContent(true)
-    setSelectedFile(filename)
-    try {
-      // Need full path including current directory
-      const fullPath = currentPath ? `${currentPath}/${filename}` : filename
-      const url = `/api/tiger/workspace?path=${encodeURIComponent(fullPath)}&read=true`
-      const data = await request(url) as FileContent
-      setFileContent(data)
-    } catch (e: unknown) {
-      setFileContent({ ok: false, path: filename, content: "Failed to load file", size: 0 })
-    } finally {
-      setLoadingContent(false)
-    }
-  }, [request, currentPath])
-
-  // Initial load
+  // ── Load agents on mount ──────────────────────────────────────────────────
   React.useEffect(() => {
-    loadDirectory("")
-  }, [loadDirectory])
+    setAgentsLoading(true)
+    apiFetch<{ ok: boolean; agents: AgentInfo[] }>("/api/tiger/agents")
+      .then((data) => { if (data.ok) setAgents(data.agents) })
+      .catch(console.error)
+      .finally(() => setAgentsLoading(false))
+  }, [])
 
-  const navigateTo = (path: string) => {
+  // Derived: the "effective" agent to browse
+  // "All" defaults to showing the orchestrator (main/Tiger)
+  const effectiveAgentId = activeAgentId ?? "main"
+
+  // ── Load file tree when agent or path changes ─────────────────────────────
+  const loadTree = React.useCallback((agentId: string, path: string) => {
+    setTreeLoading(true)
     setSelectedFile(null)
     setFileContent(null)
-    loadDirectory(path)
+    const url = path
+      ? `/api/tiger/agents/${agentId}/files?path=${encodeURIComponent(path)}`
+      : `/api/tiger/agents/${agentId}/files`
+    apiFetch<{ ok: boolean; items: FileItem[] }>(url)
+      .then((data) => { if (data.ok) setTreeItems(data.items) })
+      .catch(console.error)
+      .finally(() => setTreeLoading(false))
+  }, [])
+
+  React.useEffect(() => {
+    loadTree(effectiveAgentId, currentPath)
+  }, [effectiveAgentId, currentPath, loadTree])
+
+  // Reset path when agent changes
+  const handleAgentChange = (id: string | null) => {
+    setActiveAgentId(id)
+    setCurrentPath("")
+    setSelectedFile(null)
+    setFileContent(null)
   }
 
-  // Build breadcrumb path
-  const breadcrumbs = currentPath ? currentPath.split("/").filter(Boolean) : []
+  // ── Navigate into a directory ─────────────────────────────────────────────
+  const handleNavigate = (path: string) => {
+    setCurrentPath(path)
+  }
+
+  // ── Load file content on selection ───────────────────────────────────────
+  const handleSelectFile = React.useCallback((filePath: string) => {
+    setSelectedFile(filePath)
+    setPreviewLoading(true)
+    const url = `/api/tiger/agents/${effectiveAgentId}/file?path=${encodeURIComponent(filePath)}`
+    apiFetch<FileContent>(url)
+      .then((data) => setFileContent(data))
+      .catch(console.error)
+      .finally(() => setPreviewLoading(false))
+  }, [effectiveAgentId])
+
+  // ── Load activity feed ────────────────────────────────────────────────────
+  const loadActivity = React.useCallback(() => {
+    setActivityLoading(true)
+    apiFetch<{ ok: boolean; events: ActivityEvent[] }>("/api/tiger/activity?limit=50")
+      .then((data) => { if (data.ok) setActivityEvents(data.events) })
+      .catch(console.error)
+      .finally(() => setActivityLoading(false))
+  }, [])
+
+  // Recently active agent ids (activity within last hour) for badge highlighting
+  const recentIds = React.useMemo(() => {
+    const cutoff = Date.now() - 60 * 60 * 1000
+    return new Set(activityEvents.filter((e) => e.ts > cutoff).map((e) => e.agentId))
+  }, [activityEvents])
+
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="h-[calc(100vh-4rem)] flex flex-col gap-4 p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Workspace</h1>
-          <p className="text-sm text-muted-foreground">
-            Browse files in Tiger's workspace
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => navigateTo("")}
-          disabled={!currentPath}
-        >
-          <Home className="h-4 w-4 mr-2" />
-          Root
-        </Button>
+    <div className="flex flex-col h-[calc(100vh-4rem)] gap-3 p-4">
+      {/* Page title */}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Workspace</h1>
+        <p className="text-sm text-muted-foreground">Browse agent files and recent activity</p>
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="p-3 rounded-md bg-destructive/10 text-destructive text-sm">{error}</div>
-      )}
+      {/* Agent chip row */}
+      <AgentChipRow
+        agents={agents}
+        activeId={activeAgentId}
+        onChange={handleAgentChange}
+        recentIds={recentIds}
+      />
 
-      <div className="flex-1 grid grid-cols-3 gap-4 min-h-0">
-        {/* File List */}
-        <Card className="col-span-1 bg-card/40 flex flex-col min-h-0">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Files</CardTitle>
-            {/* Breadcrumb */}
-            {breadcrumbs.length > 0 && (
-              <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
-                <button onClick={() => navigateTo("")} className="hover:text-foreground">root</button>
-                {breadcrumbs.map((crumb, i) => (
-                  <React.Fragment key={i}>
-                    <ChevronRight className="h-3 w-3" />
-                    <button onClick={() => navigateTo(breadcrumbs.slice(0, i + 1).join("/"))} className="hover:text-foreground">
-                      {crumb}
-                    </button>
-                  </React.Fragment>
-                ))}
-              </div>
-            )}
-          </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto">
-            {loadingFiles ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : files.length === 0 ? (
-              <div className="text-sm text-muted-foreground py-8 text-center">No files</div>
-            ) : (
-              <div className="space-y-1">
-                {/* Parent directory */}
-                {currentPath && (
-                  <button
-                    onClick={() => navigateTo(breadcrumbs.slice(0, -1).join("/"))}
-                    className="w-full flex items-center gap-2 p-2 rounded-md hover:bg-muted text-left"
-                  >
-                    <ArrowLeft className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">..</span>
-                  </button>
-                )}
-                {files.map((file) => (
-                  <button
-                    key={file.name}
-                    onClick={() => file.type === "directory" ? navigateTo(currentPath ? `${currentPath}/${file.name}` : file.name) : loadFile(file.name)}
-                    className={cn(
-                      "w-full flex items-center gap-2 p-2 rounded-md hover:bg-muted text-left",
-                      selectedFile === file.name && "bg-muted"
-                    )}
-                  >
-                    {file.type === "directory" ? (
-                      <Folder className="h-4 w-4 text-amber-400" />
-                    ) : (
-                      <FileText className={cn(
-                        "h-4 w-4",
-                        getFileIcon(file.name) === "code" ? "text-blue-400" :
-                        getFileIcon(file.name) === "markdown" ? "text-purple-400" :
-                        "text-muted-foreground"
-                      )} />
-                    )}
-                    <span className="text-sm truncate flex-1">{file.name}</span>
-                    {file.size && <span className="text-xs text-muted-foreground">{formatSize(file.size)}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+      {/* Tabs: Files | Activity */}
+      <Tabs
+        defaultValue="files"
+        className="flex-1 flex flex-col min-h-0"
+        onValueChange={(v) => { if (v === "activity") loadActivity() }}
+      >
+        <TabsList className="self-start">
+          <TabsTrigger value="files">Files</TabsTrigger>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
+        </TabsList>
 
-        {/* File Viewer */}
-        <Card className="col-span-2 bg-card/40 flex flex-col min-h-0">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">
-              {selectedFile || "Select a file to view"}
-            </CardTitle>
-            {fileContent && (
-              <div className="text-xs text-muted-foreground">
-                {formatSize(fileContent.size)}
+        {/* ── Files tab ─────────────────────────────────────────────────── */}
+        <TabsContent value="files" className="flex-1 flex min-h-0 mt-2">
+          <div className="flex-1 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-3 min-h-0">
+            {/* File tree panel */}
+            <div className="border rounded-lg bg-card/40 flex flex-col min-h-0 overflow-hidden">
+              <div className="px-3 py-2 border-b shrink-0">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  {agents.find((a) => a.id === effectiveAgentId)?.emoji}{" "}
+                  {agents.find((a) => a.id === effectiveAgentId)?.name ?? "Tiger"}
+                </span>
               </div>
-            )}
-          </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto">
-            {loadingContent ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              <ScrollArea className="flex-1 p-2">
+                <FileTree
+                  items={treeItems}
+                  currentPath={currentPath}
+                  selectedFile={selectedFile}
+                  onNavigate={handleNavigate}
+                  onSelectFile={handleSelectFile}
+                  loading={treeLoading}
+                />
+              </ScrollArea>
+            </div>
+
+            {/* Preview panel */}
+            <div className="border rounded-lg bg-card/40 flex flex-col min-h-0 overflow-hidden">
+              <FilePreview
+                path={selectedFile}
+                content={fileContent?.content ?? null}
+                encoding={fileContent?.encoding ?? null}
+                mime={fileContent?.mime ?? null}
+                size={fileContent?.size ?? 0}
+                loading={previewLoading}
+                agentId={effectiveAgentId}
+                onSaved={(_p, newContent) => {
+                  // Update cached content so the view reflects the save immediately
+                  setFileContent((prev) => prev ? { ...prev, content: newContent } : prev)
+                }}
+              />
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* ── Activity tab ──────────────────────────────────────────────── */}
+        <TabsContent value="activity" className="flex-1 min-h-0 mt-2">
+          <div className="border rounded-lg bg-card/40 h-full overflow-hidden">
+            <div className="px-3 py-2 border-b">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Recent changes — all agents
+              </span>
+            </div>
+            <ScrollArea className="h-[calc(100%-2.5rem)]">
+              <div className="p-2">
+                <ActivityFeed events={activityEvents} loading={activityLoading} />
               </div>
-            ) : !selectedFile ? (
-              <div className="text-sm text-muted-foreground py-8 text-center">
-                Click a file to view its contents
-              </div>
-            ) : fileContent ? (
-              <pre className={cn(
-                "text-xs font-mono whitespace-pre-wrap break-all p-3 rounded-md border",
-                fileContent.ok ? "bg-background/50" : "bg-destructive/10 border-destructive"
-              )}>
-                {fileContent.content}
-              </pre>
-            ) : null}
-          </CardContent>
-        </Card>
-      </div>
+            </ScrollArea>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

@@ -89,8 +89,8 @@ router.get("/status/:taskId", async (req, res) => {
       const taskPath = `/sandbox/.openclaw-data/workspace/tasks/${dir}/task_${taskId}.json`;
       try {
         const content = await execInSandbox(`cat ${taskPath} 2>/dev/null || true`);
-        if (content && content.trim()) {
-          const taskData = JSON.parse(content);
+        if (content && content.stdout && content.stdout.trim()) {
+          const taskData = JSON.parse(content.stdout);
           return res.json({
             ok: true,
             status: dir,
