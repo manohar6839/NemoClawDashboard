@@ -1,9 +1,0 @@
-{
-  "id": "54d5b9b3-43b2-43dc-8969-0c1762527176",
-  "timestamp": "2026-02-09T19:02:08.903Z",
-  "command": "USER_MESSAGE",
-  "args": {
-    "content": "hi"
-  },
-  "status": "pending"
-}
