@@ -15,8 +15,6 @@ const execAsync = promisify(exec);
 // ─── Configuration ───────────────────────────────────────────────
 // Tiger runs directly in the tiger-openclaw container
 const DOCKER_CONTAINER = "tiger-openclaw";
-const K8S_NAMESPACE = "openshell";
-const POD_NAME = "tiger";
 // Real config lives in the Docker named volume, NOT on the host root path
 const OPENCLAW_CONFIG_HOST = "/var/lib/docker/volumes/tiger_tiger-config/_data/openclaw.json";
 const OPENCLAW_MODELS_HOST = "/var/lib/docker/volumes/tiger_tiger-config/_data/agents/main/agent/models.json";
