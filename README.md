@@ -1,91 +1,28 @@
-# Clawd Agent Dashboard
+# NemoClawDashboard
 
-> A premium, dark-mode "Command Center" for the Clawd AI Agent.
+Web dashboard + Express bridge for Tiger, a personal AI agent running on
+OpenClaw inside a Docker container on a Hetzner VPS.
 
-![Dashboard Preview](https://via.placeholder.com/800x400?text=Clawd+Dashboard+Preview)
+## Layout
 
-## Overview
+- `dashboard/` — Next.js 14 web UI (chat, workspace, tasks, memory,
+  cron, logs, sessions, etc.). Served at `agent.manohargupta.com`.
+- `bridge/` — Express API that wraps `docker exec tiger-openclaw`
+  commands for the dashboard. Runs as systemd unit `tiger-bridge`.
+- `deploy.sh` / `local-dev.sh` — operational scripts.
+- `data/tiger.db` — SQLite for dashboard-side persistence (projects,
+  tasks dispatch state).
 
-The **Clawd Dashboard** is a centralized interface designed to monitor and interact with the Clawd AI agent. It provides real-time visibility into the agent's memory, logs, scheduled tasks (cron jobs), and capabilities (skills), all wrapped in a sleek, responsive UI.
+## Architecture
 
-## Features
+Dashboard ⇄ Bridge ⇄ `docker exec tiger-openclaw` ⇄ OpenClaw gateway
+(WebSocket on `127.0.0.1:18789`) ⇄ Tiger + sub-agents.
 
-- **📊 System Status**: Real-time heartbeat monitoring of the `clawdbot` process.
-- **🧠 Memory Management**: View and edit the agent's core memory (`MEMORY.md`) and daily logs.
-- **🛠️ Skills Registry**: Browse, edit, and manage the agent's capabilities and MCP tools.
-- **⏱️ Cron Jobs**: detailed view and control over scheduled background tasks.
-- **💬 Chat Interface**: Integrated chat window to communicate directly with the agent.
-- **🌗 Dark Mode**: Built with a "Slate & Violet" aesthetic optimized for low-light environments.
+For chat specifically, the dashboard talks directly to the OpenClaw
+WebSocket gateway via `dashboard/src/lib/openclaw-ws.ts`, bypassing
+the bridge.
 
-## Tech Stack
+## Deployment
 
-- **Framework**: [Next.js 14](https://nextjs.org/) (App Router)
-- **UI Components**: [Shadcn/UI](https://ui.shadcn.com/) (Radix Primitives)
-- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
-- **Icons**: [Lucide React](https://lucide.dev/)
-- **State Management**: [SWR](https://swr.vercel.app/) / React Query
-- **Backend**: Next.js API Routes (Serverless)
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 18+
-- npm or pnpm
-
-### Installation
-
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/manohar6839/clawd-dashboard.git
-    cd clawd-dashboard
-    ```
-
-2.  Install dependencies:
-    ```bash
-    npm install
-    cd dashboard && npm install
-    ```
-
-3.  Configure Environment:
-    - Copy example configs:
-      ```bash
-      cp config/mcporter.example.json config/mcporter.json
-      cp config/cron.example.json config/cron.json
-      ```
-
-### Running the Dashboard
-
-Start the development server:
-
-```bash
-npm run dashboard
-```
-
-The dashboard will be available at [http://localhost:3000](http://localhost:3000).
-
-## Project Structure
-
-```
-clawd/
-├── .agent/          # Agent self-knowledge & documentation
-├── dashboard/       # Next.js Application
-│   ├── src/app/     # App Router Pages (Memory, Skills, Cron, Chat)
-│   └── src/components/ # Shared UI Components
-├── config/          # Agent configuration (Cron, MCP)
-├── memory/          # Agent daily logs
-├── tools/           # External tool scripts
-└── MEMORY.md        # Core Agent Memory
-```
-
-## Contributing
-
-1.  Fork the repository.
-2.  Create a feature branch (`git checkout -b feature/amazing-feature`).
-3.  Commit your changes (`git commit -m 'feat: Add amazing feature'`).
-4.  Push to the branch (`git push origin feature/amazing-feature`).
-5.  Open a Pull Request.
-
-## License
-
-MIT © [Manohar Air](https://github.com/manohar6839)
+Reverse-proxied through Dokploy's Traefik. BasicAuth on
+`agent.manohargupta.com`. See `deploy.sh` for the full deploy flow.
