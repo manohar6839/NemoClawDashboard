@@ -1,189 +1,361 @@
-/**
- * Projects Page — Project management with tasks
- *
- * Lists projects as cards and provides project detail view with Kanban.
- */
-
 "use client"
 
+/**
+ * /projects — Dual-source project view with inline task+agent expansion
+ *
+ * PRIMARY  → Tiger's PROJECTS.md (source of truth, read-only)
+ * SECONDARY → SQLite projects (dashboard-queued, waiting for Tiger)
+ *
+ * Click any project → expands to show tasks from TASKS.md for that project,
+ * each task row showing: stage name, assigned agent (emoji+name), status badge.
+ */
+
 import * as React from "react"
-import { FolderOpen, Plus, Loader2, MoreVertical, Pencil, Trash2 } from "lucide-react"
+import useSWR from "swr"
+import {
+  FolderOpen, Plus, Loader2, ChevronDown, ChevronRight,
+  Inbox, Trash2, MoreVertical,
+} from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
+  Dialog, DialogContent, DialogDescription, DialogHeader,
+  DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useBridgeRequest } from "@/hooks/use-bridge"
 import { cn } from "@/lib/utils"
 
-interface Project {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface FileProject {
+  id: string
+  name: string
+  description: string
+  created: string
+  tasks_count: string
+  status: string
+}
+
+interface FileTask {
+  id: string
+  title: string
+  status: string
+  status_raw: string
+  assigned_agent: string
+  project: string
+  isProject?: boolean
+  isSubTask?: boolean
+  parentId?: string
+}
+
+interface DbProject {
   id: string
   name: string
   description: string
   status: string
   priority: string
   created_at: string
-  updated_at: string
 }
 
-interface Task {
-  id: string
-  project_id: string
-  title: string
-  description: string
-  status: string
-  priority: string
-  assigned_agent: string | null
-  progress: number
-  created_at: string
-  updated_at: string
-}
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const PRIORITY_COLORS: Record<string, string> = {
-  low: "bg-gray-500/10 text-gray-400 border-gray-500/20",
+  low:    "bg-gray-500/10 text-gray-400 border-gray-500/20",
   medium: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-  high: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+  high:   "bg-amber-500/10 text-amber-400 border-amber-500/20",
   urgent: "bg-red-500/10 text-red-400 border-red-500/20",
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  active: "bg-green-500/10 text-green-400 border-green-500/20",
-  paused: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
-  completed: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-  archived: "bg-gray-500/10 text-gray-400 border-gray-500/20",
+const TASK_STATUS_COLORS: Record<string, string> = {
+  "in-progress": "bg-amber-500/10 text-amber-400",
+  review:        "bg-purple-500/10 text-purple-400",
+  done:          "bg-emerald-500/10 text-emerald-400",
+  backlog:       "bg-zinc-500/10 text-zinc-400",
 }
 
-export default function ProjectsPage() {
-  const { request } = useBridgeRequest()
-  const [projects, setProjects] = React.useState<Project[]>([])
-  const [selectedProject, setSelectedProject] = React.useState<Project | null>(null)
-  const [tasks, setTasks] = React.useState<Task[]>([])
-  const [loading, setLoading] = React.useState(false)
-  const [loadingTasks, setLoadingTasks] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
-  const [isCreateOpen, setIsCreateOpen] = React.useState(false)
-  const [newProjectName, setNewProjectName] = React.useState("")
-  const [newProjectDesc, setNewProjectDesc] = React.useState("")
-  const [newProjectPriority, setNewProjectPriority] = React.useState("medium")
-  const [creating, setCreating] = React.useState(false)
+const AGENT_EMOJI: Record<string, string> = {
+  tiger: "🐯", main: "🐯",
+  cody: "💻",  coder: "💻",
+  ethan: "🔍", researcher: "🔍",
+  cathy: "✍️", writer: "✍️",
+  elon: "📊",  pm: "📊",
+}
 
-  // Load projects
-  const loadProjects = React.useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const data = await request("/api/tiger/projects") as { ok: boolean; projects?: Project[] }
-      if (data.ok && data.projects) {
-        setProjects(data.projects)
-      } else {
-        setError("Failed to load projects")
-      }
-    } catch (e: unknown) {
-      setError("Failed to load projects")
-    } finally {
-      setLoading(false)
-    }
-  }, [request])
+const AGENT_COLORS: Record<string, string> = {
+  tiger: "text-orange-400", main: "text-orange-400",
+  cody: "text-blue-400",    coder: "text-blue-400",
+  ethan: "text-green-400",  researcher: "text-green-400",
+  cathy: "text-pink-400",   writer: "text-pink-400",
+  elon: "text-violet-400",  pm: "text-violet-400",
+}
 
-  // Load tasks for selected project
-  const loadTasks = React.useCallback(async (projectId: string) => {
-    setLoadingTasks(true)
-    try {
-      const data = await request("/api/tiger/projects") as { ok: boolean; projects?: Project[] }
-      // Get tasks from project
-      const projectData = await request(`/api/tiger/projects/${projectId}`) as { ok: boolean; project?: { tasks?: Task[] } }
-      if (projectData.ok && projectData.project?.tasks) {
-        setTasks(projectData.project.tasks)
-      } else {
-        // Fallback: get all tasks and filter
-        const allTasks = await request("/api/tiger/tasks") as { ok: boolean; tasks?: Task[] }
-        if (allTasks.ok && allTasks.tasks) {
-          setTasks(allTasks.tasks.filter(t => t.project_id === projectId))
-        }
-      }
-    } catch (e: unknown) {
-      console.error("Failed to load tasks:", e)
-    } finally {
-      setLoadingTasks(false)
-    }
-  }, [request])
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  React.useEffect(() => {
-    loadProjects()
-  }, [loadProjects])
+const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-  React.useEffect(() => {
-    if (selectedProject) {
-      loadTasks(selectedProject.id)
-    }
-  }, [selectedProject, loadTasks])
+function statusBadgeClass(status: string) {
+  const s = status.toLowerCase()
+  if (s.includes("progress") || s.includes("active") || s.includes("🔴") || s.includes("🔄"))
+    return "bg-green-500/10 text-green-400 border-green-500/20"
+  if (s.includes("review"))
+    return "bg-purple-500/10 text-purple-400 border-purple-500/20"
+  if (s.includes("done") || s.includes("complete") || s.includes("approved"))
+    return "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+  return "bg-zinc-500/10 text-zinc-400 border-zinc-500/20"
+}
 
-  const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return
-    setCreating(true)
-    try {
-      await request("/api/tiger/projects", "POST", {
-        name: newProjectName,
-        description: newProjectDesc,
-        priority: newProjectPriority,
-      })
-      setNewProjectName("")
-      setNewProjectDesc("")
-      setNewProjectPriority("medium")
-      setIsCreateOpen(false)
-      loadProjects()
-    } catch (e: unknown) {
-      console.error("Failed to create project:", e)
-    } finally {
-      setCreating(false)
-    }
-  }
+function cleanText(s: string) {
+  // Strip emoji and markdown bold markers for display
+  return s.replace(/\*\*/g, "").replace(/[✅⏳🔄❌🛢️🔍💻📊✍️🐯]/g, "").trim()
+}
 
-  const handleDeleteProject = async (id: string) => {
-    try {
-      await request("/api/tiger/projects", "POST", { _method: "DELETE", id })
-      loadProjects()
-      if (selectedProject?.id === id) {
-        setSelectedProject(null)
-        setTasks([])
-      }
-    } catch (e: unknown) {
-      console.error("Failed to delete project:", e)
-    }
-  }
+// ─── Task row inside expanded project ─────────────────────────────────────────
 
-  // Group tasks by status
-  const tasksByStatus = React.useMemo(() => {
-    const grouped: Record<string, Task[]> = {
-      backlog: [],
-      ready: [],
-      "in-progress": [],
-      review: [],
-      done: [],
-    }
-    tasks.forEach(task => {
-      if (grouped[task.status]) {
-        grouped[task.status].push(task)
-      }
-    })
-    return grouped
-  }, [tasks])
+function TaskRow({ task }: { task: FileTask }) {
+  const agentKey = task.assigned_agent?.toLowerCase() ?? ""
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-muted/20 transition-colors">
+      {/* Status badge */}
+      <span className={cn(
+        "text-[10px] font-medium px-1.5 py-0.5 rounded-full shrink-0 whitespace-nowrap",
+        TASK_STATUS_COLORS[task.status] ?? "bg-zinc-500/10 text-zinc-400"
+      )}>
+        {task.status_raw ? cleanText(task.status_raw).slice(0, 20) : task.status}
+      </span>
+
+      {/* Stage/task name */}
+      <span className="text-sm flex-1 truncate text-foreground/80">
+        {cleanText(task.title)}
+      </span>
+
+      {/* Agent */}
+      {agentKey && agentKey !== "unassigned" && (
+        <span className={cn(
+          "text-xs font-medium shrink-0 flex items-center gap-1",
+          AGENT_COLORS[agentKey] ?? "text-muted-foreground"
+        )}>
+          <span>{AGENT_EMOJI[agentKey] ?? "🤖"}</span>
+          <span className="hidden sm:inline capitalize">{agentKey}</span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ─── Tiger's project card (read-only, with task expand) ───────────────────────
+
+function FileProjectCard({ project }: { project: FileProject }) {
+  const [expanded, setExpanded] = React.useState(false)
+
+  // Fetch tasks from TASKS.md filtered to this project name
+  const projectName = cleanText(project.name)
+  const { data: tasksData, isLoading: tasksLoading } = useSWR<{
+    ok: boolean; tasks: FileTask[]
+  }>(
+    expanded
+      ? `/api/tiger/file-tasks?project=${encodeURIComponent(projectName)}`
+      : null,
+    fetcher
+  )
+
+  // Show sub-tasks (stage rows) and the project-level task (agent + status)
+  const allTasks = tasksData?.tasks ?? []
+  const projectTask = allTasks.find((t) => t.isProject)
+  const subTasks    = allTasks.filter((t) => t.isSubTask)
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <Card className="bg-card/40 transition-colors hover:bg-card/60">
+      <CardHeader className="pb-2">
+        <div className="flex items-start gap-2">
+          {/* Expand toggle + title */}
+          <button
+            className="flex items-center gap-2 text-left flex-1 min-w-0 group"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded
+              ? <ChevronDown  className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+              : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+            }
+            <CardTitle className="text-base group-hover:text-primary transition-colors">
+              {cleanText(project.name)}
+            </CardTitle>
+          </button>
+
+          {/* Status badge */}
+          <Badge className={cn("text-xs shrink-0", statusBadgeClass(project.status))}>
+            {cleanText(project.status).replace(/in progress/i, "Active")}
+          </Badge>
+        </div>
+
+        {project.description && (
+          <CardDescription className="line-clamp-2 ml-6 text-xs">
+            {project.description}
+          </CardDescription>
+        )}
+      </CardHeader>
+
+      <CardContent className="pt-0">
+        {/* Meta row */}
+        <div className="flex items-center gap-3 ml-6 text-xs text-muted-foreground">
+          <span>Created {project.created}</span>
+          <span>·</span>
+          <span>{project.tasks_count}</span>
+          {/* Show primary agent when collapsed */}
+          {!expanded && projectTask?.assigned_agent && (
+            <>
+              <span>·</span>
+              <span className={cn(
+                "flex items-center gap-1",
+                AGENT_COLORS[projectTask.assigned_agent] ?? "text-muted-foreground"
+              )}>
+                {AGENT_EMOJI[projectTask.assigned_agent] ?? ""} {projectTask.assigned_agent}
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Expanded task list */}
+        {expanded && (
+          <div className="mt-4 ml-2 border-t border-border/30 pt-3">
+            {tasksLoading ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : allTasks.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-3 italic">
+                No tasks found in TASKS.md for this project.
+              </p>
+            ) : (
+              <div className="space-y-0.5">
+                {/* Project-level agent row */}
+                {projectTask && (
+                  <div className="flex items-center gap-2 px-3 pb-2 mb-1 border-b border-border/20">
+                    <span className="text-xs text-muted-foreground">Lead:</span>
+                    <span className={cn(
+                      "text-xs font-medium flex items-center gap-1",
+                      AGENT_COLORS[projectTask.assigned_agent] ?? "text-muted-foreground"
+                    )}>
+                      {AGENT_EMOJI[projectTask.assigned_agent] ?? ""}
+                      <span className="capitalize">{projectTask.assigned_agent}</span>
+                    </span>
+                    <span className={cn(
+                      "ml-auto text-[10px] px-1.5 py-0.5 rounded-full",
+                      TASK_STATUS_COLORS[projectTask.status] ?? "bg-zinc-500/10 text-zinc-400"
+                    )}>
+                      {cleanText(projectTask.status_raw || projectTask.status)}
+                    </span>
+                  </div>
+                )}
+
+                {/* Sub-task rows (review pipeline stages etc) */}
+                {subTasks.length > 0 ? (
+                  subTasks.map((t) => <TaskRow key={t.id} task={t} />)
+                ) : (
+                  <p className="text-xs text-muted-foreground px-3 italic">
+                    No task breakdown available — Tiger tracks this at project level.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Dashboard-queued project card ───────────────────────────────────────────
+
+function DbProjectCard({ project, onDelete }: { project: DbProject; onDelete: (id: string) => void }) {
+  return (
+    <Card className="bg-card/40 border-dashed border-border/60">
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            <CardTitle className="text-base truncate text-foreground/80">{project.name}</CardTitle>
+            {project.description && (
+              <CardDescription className="line-clamp-2 text-xs mt-1">{project.description}</CardDescription>
+            )}
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => onDelete(project.id)} className="text-destructive">
+                <Trash2 className="h-4 w-4 mr-2" /> Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="flex items-center gap-2">
+          <Badge className={cn("text-xs", PRIORITY_COLORS[project.priority])}>
+            {project.priority}
+          </Badge>
+          <span className="text-xs text-muted-foreground">Queued — waiting for Tiger</span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+export default function ProjectsPage() {
+  const { data: fileData, isLoading: fileLoading } = useSWR<{
+    ok: boolean; projects: FileProject[]
+  }>("/api/tiger/file-tasks/projects", fetcher, { refreshInterval: 60_000 })
+
+  const { data: dbData, isLoading: dbLoading, mutate: mutateDb } = useSWR<{
+    ok: boolean; projects: DbProject[]
+  }>("/api/tiger/projects", fetcher, { refreshInterval: 60_000 })
+
+  const fileProjects = fileData?.projects ?? []
+  const dbProjects   = dbData?.projects ?? []
+  const isLoading    = fileLoading || dbLoading
+
+  const [isCreateOpen, setIsCreateOpen] = React.useState(false)
+  const [form, setForm] = React.useState({ name: "", seed: "", description: "", priority: "medium" })
+  const [creating, setCreating] = React.useState(false)
+  const [createError, setCreateError] = React.useState("")
+
+  const handleCreate = async () => {
+    const payload: Record<string, string> = { priority: form.priority }
+    if (form.name.trim())        payload.name = form.name.trim()
+    if (form.seed.trim())        payload.seed = form.seed.trim()
+    if (form.description.trim()) payload.description = form.description.trim()
+    if (!payload.name && !payload.seed) { setCreateError("Enter a project name or seed text."); return }
+    setCreating(true); setCreateError("")
+    try {
+      const res = await fetch("/api/tiger/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const result = await res.json()
+      if (!result.ok) throw new Error(result.error ?? "Failed")
+      setForm({ name: "", seed: "", description: "", priority: "medium" })
+      setIsCreateOpen(false)
+      mutateDb()
+    } catch (e: any) { setCreateError(e.message) }
+    finally { setCreating(false) }
+  }
+
+  const handleDelete = async (id: string) => {
+    await fetch(`/api/tiger/projects/${id}`, { method: "DELETE" })
+    mutateDb()
+  }
+
+  return (
+    <div className="flex flex-col gap-6 p-6 max-w-4xl">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -192,178 +364,86 @@ export default function ProjectsPage() {
             Projects
           </h1>
           <p className="text-sm text-muted-foreground">
-            Manage projects and track tasks across your team
+            Tiger's projects from <span className="font-mono text-xs">PROJECTS.md</span>.
+            Click a project to see its tasks and agents.
           </p>
         </div>
-
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              New Project
-            </Button>
+            <Button><Plus className="h-4 w-4 mr-2" />New Project</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Project</DialogTitle>
-              <DialogDescription>Create a new project to organize tasks.</DialogDescription>
+              <DialogTitle>Queue a Project for Tiger</DialogTitle>
+              <DialogDescription>
+                Tiger will pick this up and add it to PROJECTS.md.
+              </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 pt-4">
+            <div className="space-y-4 pt-2">
               <div>
                 <label className="text-sm font-medium">Name</label>
-                <Input
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  placeholder="Project name"
-                  className="mt-1"
-                />
+                <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. BESS Economics Model" className="mt-1" />
               </div>
               <div>
-                <label className="text-sm font-medium">Description</label>
-                <Input
-                  value={newProjectDesc}
-                  onChange={(e) => setNewProjectDesc(e.target.value)}
-                  placeholder="Project description"
-                  className="mt-1"
-                />
+                <label className="text-sm font-medium">Seed text <span className="text-muted-foreground font-normal">(Tiger generates title + goal)</span></label>
+                <textarea value={form.seed} onChange={(e) => setForm((f) => ({ ...f, seed: e.target.value }))} placeholder="Describe what you want Tiger to work on…" rows={3} className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
               </div>
               <div>
                 <label className="text-sm font-medium">Priority</label>
-                <select
-                  value={newProjectPriority}
-                  onChange={(e) => setNewProjectPriority(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 rounded-md border bg-background"
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
+                <select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md border bg-background text-sm">
+                  {["low", "medium", "high", "urgent"].map((p) => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
                 </select>
               </div>
-              <Button onClick={handleCreateProject} disabled={creating || !newProjectName.trim()}>
+              {createError && <p className="text-xs text-destructive">{createError}</p>}
+              <Button onClick={handleCreate} disabled={creating || (!form.name.trim() && !form.seed.trim())} className="w-full">
                 {creating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Create Project
+                Queue Project
               </Button>
             </div>
           </DialogContent>
         </Dialog>
       </div>
 
-      {error && (
-        <div className="p-3 rounded-md bg-destructive/10 text-destructive text-sm">{error}</div>
-      )}
-
-      {/* Projects Grid */}
-      {loading ? (
+      {isLoading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
-      ) : projects.length === 0 ? (
-        <div className="text-center py-20 text-muted-foreground">
-          <FolderOpen className="h-12 w-12 mx-auto mb-4 opacity-20" />
-          <p>No projects yet. Create your first project to get started.</p>
-        </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {projects.map((project) => (
-            <Card
-              key={project.id}
-              className={cn(
-                "cursor-pointer hover:bg-muted/50 transition-colors",
-                selectedProject?.id === project.id && "ring-2 ring-primary"
-              )}
-              onClick={() => setSelectedProject(project)}
-            >
-              <CardHeader className="pb-2">
-                <div className="flex items-start justify-between">
-                  <CardTitle className="text-lg">{project.name}</CardTitle>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={(e) => {
-                        e.stopPropagation()
-                        // TODO: Edit project
-                      }}>
-                        <Pencil className="h-4 w-4 mr-2" />
-                        Edit
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={(e) => {
-                        e.stopPropagation()
-                        handleDeleteProject(project.id)
-                      }} className="text-destructive">
-                        <Trash2 className="h-4 w-4 mr-2" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-                <CardDescription className="line-clamp-2">
-                  {project.description || "No description"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-2">
-                  <Badge className={cn("text-xs", PRIORITY_COLORS[project.priority])}>
-                    {project.priority}
-                  </Badge>
-                  <Badge className={cn("text-xs", STATUS_COLORS[project.status])}>
-                    {project.status}
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {/* Project Detail with Tasks */}
-      {selectedProject && (
-        <div className="mt-8">
-          <div className="flex items-center gap-4 mb-4">
-            <Button variant="ghost" onClick={() => setSelectedProject(null)}>
-              ← Back
-            </Button>
-            <h2 className="text-xl font-bold">{selectedProject.name}</h2>
-            <Badge className={cn(PRIORITY_COLORS[selectedProject.priority])}>
-              {selectedProject.priority}
-            </Badge>
+        <div className="space-y-8">
+          {/* Tiger's PROJECTS.md — primary */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <FolderOpen className="h-4 w-4 text-primary" />
+              <span className="text-sm font-semibold">Tiger's Projects</span>
+              <span className="text-xs font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">PROJECTS.md</span>
+              <span className="text-xs text-muted-foreground bg-muted px-1.5 rounded-full ml-1">{fileProjects.length}</span>
+            </div>
+            {fileProjects.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground">
+                <FolderOpen className="h-10 w-10 mx-auto mb-3 opacity-20" />
+                <p className="text-sm">No projects in PROJECTS.md yet.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {fileProjects.map((p) => <FileProjectCard key={p.id} project={p} />)}
+              </div>
+            )}
           </div>
 
-          {/* Simple Kanban - Tasks by Status */}
-          {loadingTasks ? (
-            <div className="flex items-center justify-center py-10">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <div className="grid gap-4 md:grid-cols-5">
-              {(["backlog", "ready", "in-progress", "review", "done"] as const).map((status) => (
-                <div key={status} className="space-y-2">
-                  <div className="text-sm font-medium text-muted-foreground uppercase tracking-wider px-2">
-                    {status.replace("-", " ")} ({tasksByStatus[status].length})
-                  </div>
-                  <div className="space-y-2">
-                    {tasksByStatus[status].map((task) => (
-                      <Card key={task.id} className="p-3 cursor-pointer hover:bg-muted/50">
-                        <div className="font-medium text-sm">{task.title}</div>
-                        {task.description && (
-                          <div className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                            {task.description}
-                          </div>
-                        )}
-                        {task.assigned_agent && (
-                          <Badge variant="outline" className="mt-2 text-xs">
-                            {task.assigned_agent}
-                          </Badge>
-                        )}
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              ))}
+          {/* Dashboard queue — secondary */}
+          {dbProjects.length > 0 && (
+            <div className="border-t border-border/40 pt-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Inbox className="h-4 w-4 text-blue-400" />
+                <span className="text-sm font-semibold text-blue-400">Dashboard Queue</span>
+                <span className="text-xs text-muted-foreground bg-muted px-1.5 rounded-full ml-1">{dbProjects.length}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">
+                Projects you've queued — Tiger will add them to PROJECTS.md when he processes them.
+              </p>
+              <div className="flex flex-col gap-3">
+                {dbProjects.map((p) => <DbProjectCard key={p.id} project={p} onDelete={handleDelete} />)}
+              </div>
             </div>
           )}
         </div>

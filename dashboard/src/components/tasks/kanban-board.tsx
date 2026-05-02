@@ -72,14 +72,15 @@ export function KanbanBoard() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  // Load tasks from API
+  // Load tasks from TASKS.md via /api/tiger/file-tasks
   const loadTasks = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await request("/api/tiger/tasks") as { ok: boolean; tasks?: Task[] }
+      const data = await request("/api/tiger/file-tasks") as { ok: boolean; tasks?: any[] }
       if (data.ok && data.tasks) {
-        setTasks(data.tasks.map((t: Task) => ({
+        setTasks(data.tasks.map((t: any) => ({
           ...t,
+          content: t.title || t.content || t.description || "",  // map title to content for kanban
           tags: typeof t.tags === "string" ? JSON.parse(t.tags || "[]") : t.tags || [],
         })))
       }

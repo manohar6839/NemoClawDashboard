@@ -1,12 +1,14 @@
 "use client"
+
 /**
- * settings/page.tsx — Tiger configuration
+ * settings/page.tsx — Tiger configuration + API key management
  *
- * Sections:
- *  1. Model         — primary model dropdown + fallback models
- *  2. Session       — dmScope, compaction mode
- *  3. Telegram      — enabled toggle, streaming mode
- *  4. Commands      — native commands, ownerDisplay
+ * Sections (in order):
+ *  0. API Keys & Router — ANTHROPIC, OPENROUTER, TELEGRAM keys + TIGER_ROUTER_MODEL
+ *  1. Model            — OpenClaw global model dropdown + fallbacks + compaction
+ *  2. Session          — dmScope
+ *  3. Telegram         — enabled toggle, streaming mode
+ *  4. Commands         — native commands, ownerDisplay, restart
  */
 
 import * as React from "react"
@@ -14,6 +16,7 @@ import useSWR from "swr"
 import {
   Settings2, Save, Loader2, RefreshCw,
   Bot, MessageSquare, Terminal, Cpu, AlertCircle, Check,
+  Key, RotateCcw,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -31,10 +34,20 @@ interface ModelInfo {
 }
 
 interface OpenClawConfig {
-  agents?: { defaults?: { model?: { primary?: string; fallbacks?: string[] }; compaction?: { mode?: string } } }
+  agents?: {
+    defaults?: {
+      model?: { primary?: string; fallbacks?: string[] }
+      compaction?: { mode?: string }
+    }
+  }
   session?: { dmScope?: string }
   channels?: { telegram?: { enabled?: boolean; streaming?: string } }
   commands?: { native?: string; ownerDisplay?: string; restart?: boolean }
+}
+
+interface KeyPresence {
+  isSet: boolean
+  preview?: string
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -57,7 +70,7 @@ function set(obj: any, path: string, value: any): any {
   return result
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Shared sub-components ────────────────────────────────────────────────────
 
 function SettingRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -107,25 +120,16 @@ function SelectInput({ value, options, onChange }: {
   )
 }
 
-// ─── Model dropdown component ─────────────────────────────────────────────────
-
 function ModelSelect({ value, models, onChange }: {
   value: string
   models: ModelInfo[]
   onChange: (v: string) => void
 }) {
-  // Group by provider
   const grouped = models.reduce<Record<string, ModelInfo[]>>((acc, m) => {
     if (!acc[m.provider]) acc[m.provider] = []
     acc[m.provider].push(m)
     return acc
   }, {})
-
-  const providerLabels: Record<string, string> = {
-    minimax: "MiniMax",
-    "minimax-portal": "MiniMax Portal",
-    openrouter: "OpenRouter",
-  }
 
   const current = models.find(m => m.id === value)
 
@@ -137,15 +141,13 @@ function ModelSelect({ value, models, onChange }: {
         className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring w-full max-w-sm"
       >
         {Object.entries(grouped).map(([prov, mods]) => (
-          <optgroup key={prov} label={providerLabels[prov] ?? prov}>
+          <optgroup key={prov} label={prov}>
             {mods.map(m => (
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </optgroup>
         ))}
       </select>
-
-      {/* Model detail badge row */}
       {current && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
@@ -158,14 +160,9 @@ function ModelSelect({ value, models, onChange }: {
           )}
           {current.contextWindow > 0 && (
             <span className="text-xs text-muted-foreground">
-              {current.contextWindow >= 1000000
-                ? `${(current.contextWindow / 1000000).toFixed(1)}M ctx`
-                : `${Math.round(current.contextWindow / 1000)}K ctx`}
-            </span>
-          )}
-          {current.cost && (
-            <span className="text-xs text-muted-foreground">
-              ${current.cost.input}/M in · ${current.cost.output}/M out
+              {current.contextWindow >= 1_000_000
+                ? `${(current.contextWindow / 1_000_000).toFixed(1)}M ctx`
+                : `${Math.round(current.contextWindow / 1_000)}K ctx`}
             </span>
           )}
         </div>
@@ -173,8 +170,6 @@ function ModelSelect({ value, models, onChange }: {
     </div>
   )
 }
-
-// ─── Section card wrapper ─────────────────────────────────────────────────────
 
 function SectionCard({ icon: Icon, title, description, children, dirty }: {
   icon: React.ElementType
@@ -200,21 +195,214 @@ function SectionCard({ icon: Icon, title, description, children, dirty }: {
   )
 }
 
+// ─── Section 0: API Keys ──────────────────────────────────────────────────────
+
+const SECRET_KEYS = [
+  { key: "ANTHROPIC_API_KEY",  label: "Anthropic API key",  hint: "Required for claude-* models via TIGER_ROUTER_MODEL" },
+  { key: "OPENROUTER_API_KEY", label: "OpenRouter API key", hint: "Required for openrouter/* and other non-Anthropic models" },
+  { key: "TELEGRAM_BOT_TOKEN", label: "Telegram bot token", hint: "Bot token from @BotFather — enables Telegram channel" },
+  { key: "TELEGRAM_CHAT_ID",   label: "Telegram chat ID",   hint: "Your personal chat ID — restricts who can DM Tiger" },
+] as const
+
+type SecretKey = (typeof SECRET_KEYS)[number]["key"]
+
+function ApiKeysSection() {
+  const { data: keysData, mutate: mutateKeys } = useSWR<{
+    ok: boolean
+    keys: Record<string, KeyPresence>
+  }>("/api/tiger/keys", fetcher, { revalidateOnFocus: false })
+
+  const keysPresence = keysData?.keys ?? {}
+
+  // Local draft for pending key values (user types new value)
+  const [draft, setDraft] = React.useState<Partial<Record<SecretKey | "TIGER_ROUTER_MODEL", string>>>({})
+  const [saving, setSaving] = React.useState(false)
+  const [saveState, setSaveState] = React.useState<"idle" | "ok" | "err">("idle")
+  const [saveMsg, setSaveMsg] = React.useState("")
+  const [restarting, setRestarting] = React.useState(false)
+  const [restartMsg, setRestartMsg] = React.useState("")
+
+  // Router model uses preview value (non-secret)
+  const routerModelPreview = keysPresence["TIGER_ROUTER_MODEL"]?.preview ?? ""
+  const [routerModelDraft, setRouterModelDraft] = React.useState("")
+
+  // Sync router model draft from server on first load
+  React.useEffect(() => {
+    if (routerModelPreview && !routerModelDraft) {
+      setRouterModelDraft(routerModelPreview)
+    }
+  }, [routerModelPreview])
+
+  const anyChanges = Object.keys(draft).length > 0 || routerModelDraft !== routerModelPreview
+
+  const handleSaveKeys = async () => {
+    setSaving(true)
+    setSaveState("idle")
+    const payload: Record<string, string | null> = {}
+    for (const [k, v] of Object.entries(draft)) {
+      // Empty string in the input → clear the key
+      payload[k] = v === "" ? null : v
+    }
+    if (routerModelDraft !== routerModelPreview) {
+      payload["TIGER_ROUTER_MODEL"] = routerModelDraft || null
+    }
+    try {
+      const res = await fetch("/api/tiger/keys", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.error ?? "Save failed")
+      setSaveState("ok")
+      setSaveMsg("Keys saved. Restart bridge to apply.")
+      setDraft({})
+      mutateKeys()
+      setTimeout(() => { setSaveState("idle"); setSaveMsg("") }, 5000)
+    } catch (err: any) {
+      setSaveState("err")
+      setSaveMsg(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRestartBridge = async () => {
+    setRestarting(true)
+    setRestartMsg("")
+    try {
+      const res = await fetch("/api/tiger/bridge-restart", { method: "POST" })
+      const data = await res.json()
+      setRestartMsg(data.message ?? "Restart initiated.")
+      setTimeout(() => setRestartMsg(""), 8000)
+    } catch {
+      setRestartMsg("Restart request failed.")
+    } finally {
+      setRestarting(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Key className="h-4 w-4 text-muted-foreground" />
+          API Keys &amp; Router
+        </CardTitle>
+        <CardDescription>
+          Stored in bridge .env. Values are never returned — only presence is shown.
+          After saving, click <strong>Restart bridge</strong> to apply.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {/* Secret keys */}
+        {SECRET_KEYS.map(({ key, label, hint }) => {
+          const isSet = keysPresence[key]?.isSet ?? false
+          const hasDraft = draft[key] !== undefined
+          return (
+            <SettingRow key={key} label={label} hint={hint}>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  placeholder={isSet ? "●●●●●●●● (set)" : "Not set — paste to update"}
+                  value={draft[key] ?? ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
+                  className={cn(
+                    "h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring w-full max-w-sm",
+                    hasDraft && "border-primary/60"
+                  )}
+                />
+                {isSet && !hasDraft && (
+                  <span className="text-xs text-emerald-400 shrink-0">✓ set</span>
+                )}
+                {hasDraft && draft[key] === "" && (
+                  <span className="text-xs text-amber-400 shrink-0">will clear</span>
+                )}
+              </div>
+            </SettingRow>
+          )
+        })}
+
+        {/* Router model (non-secret, shown as text) */}
+        <SettingRow
+          label="Router model"
+          hint="Model slug for classifyAgent / generateProject*. Prefix 'anthropic/' uses Anthropic API; anything else uses OpenRouter."
+        >
+          <input
+            type="text"
+            value={routerModelDraft}
+            onChange={(e) => setRouterModelDraft(e.target.value)}
+            placeholder="e.g. anthropic/claude-haiku-4-5"
+            className={cn(
+              "h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring w-full max-w-sm",
+              routerModelDraft !== routerModelPreview && "border-primary/60"
+            )}
+          />
+        </SettingRow>
+
+        {/* Feedback */}
+        {saveMsg && (
+          <div className={cn(
+            "mt-3 text-xs px-3 py-2 rounded",
+            saveState === "err"
+              ? "bg-destructive/10 text-destructive"
+              : "bg-emerald-500/10 text-emerald-400"
+          )}>
+            {saveMsg}
+          </div>
+        )}
+        {restartMsg && (
+          <div className="mt-2 text-xs px-3 py-2 rounded bg-blue-500/10 text-blue-400">
+            {restartMsg}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 mt-4">
+          <Button
+            size="sm"
+            onClick={handleSaveKeys}
+            disabled={!anyChanges || saving}
+          >
+            {saving
+              ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              : saveState === "ok"
+              ? <Check className="h-4 w-4 mr-1" />
+              : <Save className="h-4 w-4 mr-1" />
+            }
+            {saving ? "Saving…" : saveState === "ok" ? "Saved!" : "Save Keys"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleRestartBridge}
+            disabled={restarting}
+          >
+            {restarting
+              ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              : <RotateCcw className="h-4 w-4 mr-1" />
+            }
+            {restarting ? "Restarting…" : "Restart bridge"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
-  // Raw config from bridge
   const { data: configData, mutate: mutateConfig, isLoading: configLoading } =
     useSWR<{ ok: boolean; config: OpenClawConfig }>("/api/tiger/config", fetcher)
 
-  // Available models
   const { data: modelsData, isLoading: modelsLoading } =
     useSWR<{ ok: boolean; models: ModelInfo[] }>("/api/tiger/config/models", fetcher)
 
   const remoteConfig = configData?.config ?? {}
   const models = modelsData?.models ?? []
 
-  // ── Local draft — tracks unsaved edits ─────────────────────────────────────
   const [draft, setDraft] = React.useState<OpenClawConfig>({})
   const [initialized, setInitialized] = React.useState(false)
 
@@ -225,18 +413,12 @@ export default function SettingsPage() {
     }
   }, [configData, initialized])
 
-  const update = (path: string, value: any) => {
-    setDraft(prev => set(prev, path, value))
-  }
-
+  const update = (path: string, value: any) => setDraft(prev => set(prev, path, value))
   const g = (path: string, fallback: any = "") => get(draft, path, fallback)
   const r = (path: string, fallback: any = "") => get(remoteConfig, path, fallback)
-
-  // Dirty check — compare draft to remote at path level
   const isDirty = (path: string) => JSON.stringify(g(path)) !== JSON.stringify(r(path))
   const anyDirty = JSON.stringify(draft) !== JSON.stringify(remoteConfig)
 
-  // ── Save ────────────────────────────────────────────────────────────────────
   const [saving, setSaving] = React.useState(false)
   const [saveState, setSaveState] = React.useState<"idle" | "ok" | "err">("idle")
   const [saveError, setSaveError] = React.useState("")
@@ -254,7 +436,7 @@ export default function SettingsPage() {
       if (!data.ok) throw new Error(data.error ?? "Save failed")
       setSaveState("ok")
       await mutateConfig()
-      setInitialized(false) // re-sync draft from fresh server data
+      setInitialized(false)
       setTimeout(() => setSaveState("idle"), 3000)
     } catch (err: any) {
       setSaveError(err.message)
@@ -271,7 +453,6 @@ export default function SettingsPage() {
 
   const loading = configLoading || modelsLoading || !initialized
 
-  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-6 p-6 max-w-3xl">
 
@@ -282,7 +463,7 @@ export default function SettingsPage() {
             <Settings2 className="h-6 w-6" /> Settings
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Live Tiger configuration — writes directly to openclaw.json inside the container.
+            API keys and Tiger configuration.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -294,13 +475,13 @@ export default function SettingsPage() {
               ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
               : saveState === "ok"
               ? <Check className="h-4 w-4 mr-1" />
-              : <Save className="h-4 w-4 mr-1" />}
-            {saving ? "Saving…" : saveState === "ok" ? "Saved!" : "Save Changes"}
+              : <Save className="h-4 w-4 mr-1" />
+            }
+            {saving ? "Saving…" : saveState === "ok" ? "Saved!" : "Save Config"}
           </Button>
         </div>
       </div>
 
-      {/* Save error */}
       {saveState === "err" && (
         <div className="flex items-center gap-2 p-3 rounded-md bg-destructive/10 text-destructive text-sm">
           <AlertCircle className="h-4 w-4 shrink-0" />
@@ -308,35 +489,31 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* ── 0. API Keys (always rendered — has its own data fetching) ─── */}
+      <ApiKeysSection />
+
       {loading ? (
-        <div className="flex items-center justify-center py-24">
+        <div className="flex items-center justify-center py-16">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       ) : (
         <div className="space-y-6">
 
-          {/* ── 1. Model ───────────────────────────────────────────────────── */}
+          {/* ── 1. Model ─────────────────────────────────────────────────── */}
           <SectionCard
             icon={Cpu}
             title="Model"
-            description="Which AI model Tiger and sub-agents use. Changes take effect on the next conversation."
+            description="Global model for Tiger and sub-agents. Per-agent overrides live on the Agents page."
             dirty={isDirty("agents.defaults.model.primary") || isDirty("agents.defaults.model.fallbacks")}
           >
-            <SettingRow
-              label="Primary model"
-              hint="Active model for all agents"
-            >
+            <SettingRow label="Primary model" hint="Active model for all agents (unless overridden)">
               <ModelSelect
                 value={g("agents.defaults.model.primary", "")}
                 models={models}
                 onChange={v => update("agents.defaults.model.primary", v)}
               />
             </SettingRow>
-
-            <SettingRow
-              label="Fallback models"
-              hint="Comma-separated, tried in order if primary fails"
-            >
+            <SettingRow label="Fallback models" hint="Comma-separated, tried in order if primary fails">
               <input
                 type="text"
                 value={(g("agents.defaults.model.fallbacks", []) as string[]).join(", ")}
@@ -348,11 +525,7 @@ export default function SettingsPage() {
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ring w-full max-w-sm"
               />
             </SettingRow>
-
-            <SettingRow
-              label="Compaction mode"
-              hint="How Tiger handles context window limits"
-            >
+            <SettingRow label="Compaction mode" hint="How Tiger handles context window limits">
               <SelectInput
                 value={g("agents.defaults.compaction.mode", "safeguard")}
                 options={[
@@ -365,17 +538,14 @@ export default function SettingsPage() {
             </SettingRow>
           </SectionCard>
 
-          {/* ── 2. Session ─────────────────────────────────────────────────── */}
+          {/* ── 2. Session ───────────────────────────────────────────────── */}
           <SectionCard
             icon={Bot}
             title="Session"
-            description="How Tiger manages conversation sessions and identity scoping."
+            description="Conversation session and identity scoping."
             dirty={isDirty("session.dmScope")}
           >
-            <SettingRow
-              label="DM scope"
-              hint="How Tiger isolates context between different Telegram chats"
-            >
+            <SettingRow label="DM scope" hint="Context isolation between Telegram chats">
               <SelectInput
                 value={g("session.dmScope", "per-channel-peer")}
                 options={[
@@ -388,7 +558,7 @@ export default function SettingsPage() {
             </SettingRow>
           </SectionCard>
 
-          {/* ── 3. Telegram ────────────────────────────────────────────────── */}
+          {/* ── 3. Telegram ──────────────────────────────────────────────── */}
           <SectionCard
             icon={MessageSquare}
             title="Telegram"
@@ -401,11 +571,7 @@ export default function SettingsPage() {
                 onChange={v => update("channels.telegram.enabled", v)}
               />
             </SettingRow>
-
-            <SettingRow
-              label="Streaming"
-              hint="How Tiger sends message updates while generating"
-            >
+            <SettingRow label="Streaming" hint="How Tiger sends updates while generating">
               <SelectInput
                 value={g("channels.telegram.streaming", "partial")}
                 options={[
@@ -418,17 +584,14 @@ export default function SettingsPage() {
             </SettingRow>
           </SectionCard>
 
-          {/* ── 4. Commands ────────────────────────────────────────────────── */}
+          {/* ── 4. Commands ──────────────────────────────────────────────── */}
           <SectionCard
             icon={Terminal}
             title="Commands"
-            description="How Tiger handles native and system commands."
+            description="Native and system command settings."
             dirty={isDirty("commands.native") || isDirty("commands.ownerDisplay") || isDirty("commands.restart")}
           >
-            <SettingRow
-              label="Native commands"
-              hint="Whether Tiger can run shell commands on the host"
-            >
+            <SettingRow label="Native commands" hint="Whether Tiger can run shell commands on the host">
               <SelectInput
                 value={g("commands.native", "auto")}
                 options={[
@@ -439,25 +602,17 @@ export default function SettingsPage() {
                 onChange={v => update("commands.native", v)}
               />
             </SettingRow>
-
-            <SettingRow
-              label="Owner display"
-              hint="How Manohar's name appears to Tiger in context"
-            >
+            <SettingRow label="Owner display" hint="How your name appears to Tiger">
               <SelectInput
                 value={g("commands.ownerDisplay", "raw")}
                 options={[
-                  { value: "raw",       label: "Raw — show as-is" },
+                  { value: "raw",       label: "Raw — as-is" },
                   { value: "formatted", label: "Formatted — display name" },
                 ]}
                 onChange={v => update("commands.ownerDisplay", v)}
               />
             </SettingRow>
-
-            <SettingRow
-              label="Allow restart"
-              hint="Tiger can restart itself when needed"
-            >
+            <SettingRow label="Allow restart" hint="Tiger can restart itself when needed">
               <Toggle
                 checked={g("commands.restart", true)}
                 onChange={v => update("commands.restart", v)}

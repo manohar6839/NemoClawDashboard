@@ -177,6 +177,27 @@ export async function bridgePut(
   return res.json();
 }
 
+
+export async function bridgePatch(
+  path: string,
+  body: Record<string, unknown> = {}
+): Promise<unknown> {
+  const res = await fetch(BRIDGE_URL + path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error('Bridge PATCH ' + path + ' failed: ' + res.status + ' ' + errBody);
+  }
+  return res.json();
+}
+
 export function bridgeLogsUrl(lines = 100, filter = ""): string {
   const url = new URL(`${BRIDGE_URL}/tiger/logs`);
   url.searchParams.set("lines", String(lines));
