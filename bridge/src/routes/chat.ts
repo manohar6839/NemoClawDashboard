@@ -93,16 +93,22 @@ router.post("/", async (req, res) => {
     const { promisify } = await import("util");
     const execAsync = promisify(exec);
 
-    // Escape the message for shell
-    const escapedMessage = message.replace(/'/g, "'\\''");
-
-    // Use openclaw agent to send a message to the main session
-    // Session ID: agent:main:main (agent:main:main)
-    // In TIGER_REMOTE mode, prefix with ssh so docker runs on the VPS.
+    // Write message to temp file — avoids ALL shell escaping issues
+    // (backticks, quotes, code blocks in messages are all safe this way)
+    const { writeFileSync: wfChat, unlinkSync: ulChat } = await import("fs");
+    const { execSync: exChat } = await import("child_process");
+    const tmpMsg = `/tmp/msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.txt`;
     const sshPrefix = process.env.TIGER_REMOTE === "true"
       ? `ssh ${process.env.TIGER_REMOTE_SSH || "root@100.75.128.45"} `
       : "";
-    const cmd = `${sshPrefix}docker exec tiger-openclaw openclaw agent --session-id agent:main:main -m '${escapedMessage}' --json --timeout 120`;
+    try {
+      wfChat(tmpMsg, message, "utf-8");
+      exChat(`${sshPrefix}docker cp ${tmpMsg} tiger-openclaw:${tmpMsg}`, { timeout: 5000 });
+      ulChat(tmpMsg);
+    } catch (cpErr: any) {
+      throw new Error(`Failed to stage message for container: ${cpErr.message}`);
+    }
+    const cmd = `${sshPrefix}docker exec tiger-openclaw sh -c 'MSG=$(cat ${tmpMsg}); rm -f ${tmpMsg}; openclaw agent --session-id agent:main:main -m "$MSG" --json --timeout 120'`;
 
     const tBeforeSpawn = Date.now();
     tSpawn = tBeforeSpawn - tStart;

@@ -27,7 +27,7 @@ set -euo pipefail
 
 # ─── Configuration ───────────────────────────────────────────────────
 SERVER="root@100.75.128.45"
-SERVER_PATH="/root/NemoClawDashboard"
+SERVER_PATH="/root/OpenClawDashboard"
 LOCAL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors — makes scanning the output easier when things go wrong
@@ -77,7 +77,7 @@ section "Pre-flight checks"
 # [1] Are we in the right directory?
 cd "$LOCAL_PATH"
 if [ ! -d .git ] || [ ! -d dashboard ] || [ ! -d bridge ]; then
-  die "Not in NemoClawDashboard repo root. cd to the repo first."
+  die "Not in OpenClawDashboard repo root. cd to the repo first."
 fi
 ok "In repo: $LOCAL_PATH"
 

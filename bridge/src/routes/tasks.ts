@@ -98,21 +98,27 @@ router.post("/:id/execute", async (req, res) => {
     status: "pending",
   };
 
-  // Write task JSON to sandbox's inbox via kubectl exec
-  const inboxPath = "/sandbox/.openclaw-data/workspace/tasks/inbox";
+  // Write task JSON to container's inbox via docker exec
+  const inboxPath = "/home/node/.openclaw/workspace/tasks/inbox";
   const taskFile = `task_${id}.json`;
 
   // Import execInSandbox dynamically to avoid circular deps
   const { execInSandbox } = await import("../tiger.js");
 
   try {
-    // Create directories if needed
-    await execInSandbox(`mkdir -p ${inboxPath}`);
-
-    // Write the task file
+    // Write task JSON via temp file (avoids ALL shell escaping issues)
     const taskJson = JSON.stringify(taskData, null, 2);
-    const escapedJson = taskJson.replace(/'/g, "'\\''");
-    await execInSandbox(`printf '%s' '${escapedJson}' > ${inboxPath}/${taskFile}`);
+    const { writeFileSync: wfs, unlinkSync: uls } = await import("fs");
+    const { execSync: exs } = await import("child_process");
+    const tmpHost = `/tmp/task_${id}_${Date.now()}.json`;
+    try {
+      wfs(tmpHost, taskJson, "utf-8");
+      exs(`docker cp ${tmpHost} tiger-openclaw:${tmpHost}`, { timeout: 5000 });
+      uls(tmpHost);
+    } catch (copyErr: any) {
+      throw new Error(`Failed to copy task to container: ${copyErr.message}`);
+    }
+    await execInSandbox(`mkdir -p ${inboxPath} && mv ${tmpHost} ${inboxPath}/${taskFile}`);
 
     // Create execution record
     const execution = executions.create({

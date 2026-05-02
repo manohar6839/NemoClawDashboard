@@ -13,6 +13,7 @@
 
 import { Router } from "express";
 import { projects, tasks } from "../db.js";
+import { generateProjectTitle, generateProjectGoal } from "../lib/llm.js";
 
 const router = Router();
 
@@ -23,13 +24,43 @@ router.get("/", (req, res) => {
 });
 
 // Create project
-router.post("/", (req, res) => {
-  const { name, description, priority } = req.body;
-  if (!name) {
-    return res.status(400).json({ ok: false, error: "name is required" });
+// Accepts { name?, description?, seed?, priority? }.
+// If name is absent, generates a 3-7 word title from seedText via LLM (falls back to raw text).
+// If description is absent, generates a one-line goal via LLM (falls back to "").
+router.post("/", async (req, res) => {
+  const { name, description, priority, seed } = req.body;
+
+  // Need at least one source of text to work with
+  const seedText = (seed || description || name || "").trim();
+  if (!seedText) {
+    return res.status(400).json({ ok: false, error: "name, description, or seed is required" });
   }
-  const created = projects.create({ name, description, priority });
-  res.status(201).json({ ok: true, project: created });
+
+  // ── Title ─────────────────────────────────────────────────────────────────
+  let finalName: string = (name || "").trim();
+  let titleGenerated = false;
+  if (!finalName) {
+    finalName = (await generateProjectTitle(seedText)) ?? seedText.slice(0, 80);
+    titleGenerated = true;
+  }
+
+  // ── Description / goal ────────────────────────────────────────────────────
+  // Only generate if description was explicitly absent from the request.
+  let finalDesc: string;
+  let goalGenerated = false;
+  if (description === undefined || description === null) {
+    finalDesc = (await generateProjectGoal(seedText)) ?? "";
+    goalGenerated = true;
+  } else {
+    finalDesc = (description || "").trim();
+  }
+
+  const created = projects.create({ name: finalName, description: finalDesc, priority });
+  res.status(201).json({
+    ok: true,
+    project: created,
+    _llm: { title_generated: titleGenerated, goal_generated: goalGenerated },
+  });
 });
 
 // Get project with tasks

@@ -9,14 +9,13 @@ import { exec, execFile, spawn } from "child_process";
 import { promisify } from "util";
 import { readFile, writeFile } from "fs/promises";
 import { createHash } from "crypto";
+import path from "path";
 
 const execAsync = promisify(exec);
 
 // ─── Configuration ───────────────────────────────────────────────
 // Tiger runs directly in the tiger-openclaw container
 const DOCKER_CONTAINER = "tiger-openclaw";
-const K8S_NAMESPACE = "openshell";
-const POD_NAME = "tiger";
 // Real config lives in the Docker named volume, NOT on the host root path
 const OPENCLAW_CONFIG_HOST = "/var/lib/docker/volumes/tiger_tiger-config/_data/openclaw.json";
 const OPENCLAW_MODELS_HOST = "/var/lib/docker/volumes/tiger_tiger-config/_data/agents/main/agent/models.json";
@@ -38,6 +37,37 @@ const SSH_PREFIX = IS_REMOTE ? `ssh ${REMOTE_SSH} ` : "";
 
 if (IS_REMOTE) {
   console.log(`[bridge] REMOTE MODE: docker commands will run via ssh ${REMOTE_SSH}`);
+}
+
+/**
+ * Execute a file-based command (no shell) on the host, with optional SSH prefix.
+ * Used for safe file reads where execFile avoids shell injection.
+ */
+async function execFileOnHost(
+  file: string,
+  args: string[],
+  timeoutMs = DEFAULT_TIMEOUT
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const cmd = IS_REMOTE ? ["ssh", REMOTE_SSH, file, ...args] : [file, ...args];
+  try {
+    const { stdout: out, stderr: err } = await execFile(cmd[0], cmd.slice(1), {
+      timeout: timeoutMs,
+      maxBuffer: 5 * 1024 * 1024,
+    });
+    const stdout = typeof out === "string" ? out : out?.toString() ?? "";
+    const stderr = typeof err === "string" ? err : err?.toString() ?? "";
+    return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode: 0 };
+  } catch (err: any) {
+    const out = err.stdout;
+    const er = err.stderr;
+    const stdout = typeof out === "string" ? out : out?.toString() ?? "";
+    const stderr = typeof er === "string" ? er : er?.toString() ?? "";
+    return {
+      stdout: stdout.trim(),
+      stderr: (stderr || err.message || "").trim(),
+      exitCode: err.code ?? 1,
+    };
+  }
 }
 
 /**
@@ -329,12 +359,15 @@ export async function listWorkspaceFiles(
  * Read a file from the Tiger workspace.
  */
 export async function readWorkspaceFile(filepath: string): Promise<string> {
-  // Security: prevent path traversal
-  const sanitized = filepath.replace(/\.\./g, "").replace(/^\//, "");
-  const { stdout, exitCode } = await execOnHost(
-    `cat "${WORKSPACE_SYMLINK}/${sanitized}" 2>/dev/null`
-  );
-  if (exitCode !== 0) throw new Error(`File not found: ${sanitized}`);
+  // Security: resolve the path and ensure it stays within the workspace.
+  // Blocks path traversal attempts (e.g. ../../etc/passwd).
+  const safeName = filepath.replace(/\.\./g, "");
+  const fullPath = path.resolve(WORKSPACE_SYMLINK, safeName);
+  if (!fullPath.startsWith(WORKSPACE_SYMLINK)) {
+    throw new Error("Access denied: path outside workspace");
+  }
+  const { stdout, exitCode } = await execFileOnHost("cat", [fullPath], 10_000);
+  if (exitCode !== 0) throw new Error(`File not found: ${safeName}`);
   return stdout;
 }
 
