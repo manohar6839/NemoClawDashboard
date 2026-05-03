@@ -72,7 +72,7 @@ async function execFileOnHost(
 
 /**
  * Execute a command inside the Tiger container.
- * Commands run directly via docker exec (no kubectl needed).
+ * Commands run directly via docker exec inside tiger-openclaw container.
  */
 export async function execInSandbox(
   command: string,

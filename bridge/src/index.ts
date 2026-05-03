@@ -3,23 +3,60 @@
  *
  * Express server running on the Hetzner VPS host (port 3456).
  * Wraps docker exec commands into authenticated REST endpoints consumed
- * by the Next.js dashboard and Tiger's cron jobs.
+ * by the Next.js dashboard and Tiger agent cron jobs.
  *
  * Architecture:
- *   Dashboard (Next.js) → HTTPS → Traefik (dokploy-traefik)
- *                               → Tiger Bridge (this server, port 3456)
- *                               → docker exec tiger-openclaw
- *                               → OpenClaw agent (Tiger agent)
+ *   Dashboard (Next.js) → HTTPS → Traefik → Tiger Bridge (port 3456)
+ *                                          → docker exec tiger-openclaw
+ *                                          → OpenClaw (Tiger agent)
+ *
+ * Auth: Bearer token (TIGER_BRIDGE_TOKEN). All routes except none are protected.
  *
  * Routes:
- *   GET  /tiger/status      — container health + process state + memory/CPU
- *   GET  /tiger/logs        — SSE stream of real-time container logs
- *   POST /tiger/exec        — run a command inside the container
- *   GET  /tiger/config      — read openclaw.json config
- *   POST /tiger/config      — update config
- *   POST /tiger/restart     — trigger container restart via watchdog
- *   GET  /tiger/workspace   — list workspace files
- *   GET  /tiger/files/:path — read a workspace file
+ *   GET    /tiger/status                — container health + memory/CPU
+ *   GET    /tiger/logs                  — SSE stream of container logs
+ *   POST   /tiger/exec                  — run arbitrary command in container
+ *   GET    /tiger/config                — read openclaw.json
+ *   POST   /tiger/config                — update openclaw.json
+ *   GET    /tiger/config/models         — list registered models
+ *   GET    /tiger/config/models/agents  — per-agent model overrides
+ *   PATCH  /tiger/config/models/agents/:id — update agent model
+ *   POST   /tiger/restart               — restart tiger-openclaw container
+ *   GET    /tiger/workspace             — list workspace files
+ *   GET    /tiger/files/:path           — read a workspace file
+ *   PUT    /tiger/agents/:id/file       — write an agent workspace file
+ *   GET    /tiger/agents                — list configured agents
+ *   GET    /tiger/agents/:id/files      — list agent workspace files
+ *   GET    /tiger/agents/activity       — recent agent activity log
+ *   GET    /tiger/projects              — list projects (SQLite)
+ *   POST   /tiger/projects              — create project
+ *   GET    /tiger/projects/:id          — get project
+ *   PUT    /tiger/projects/:id          — update project
+ *   DELETE /tiger/projects/:id          — delete project
+ *   GET    /tiger/tasks                 — list tasks (SQLite)
+ *   GET    /tiger/tasks/:id             — get task
+ *   PUT    /tiger/tasks/:id             — update task
+ *   DELETE /tiger/tasks/:id             — delete task
+ *   POST   /tiger/tasks/:id/execute     — enqueue task for execution
+ *   GET    /tiger/file-tasks            — TASKS.md → tasks[] (JSON block)
+ *   GET    /tiger/file-tasks/active     — in-progress + pending-action only
+ *   GET    /tiger/file-tasks/completed  — completed section only
+ *   GET    /tiger/file-tasks/projects   — PROJECTS.md → projects[]
+ *   GET    /tiger/cron                  — list cron jobs (jobs.json)
+ *   POST   /tiger/cron/:id/run          — fire cron job immediately
+ *   POST   /tiger/notify                — send Telegram message {message, chatId?}
+ *   POST   /tiger/dispatch              — enqueue task to SQLite + write to inbox
+ *   GET    /tiger/dispatch/status/:id   — poll task execution status
+ *   POST   /tiger/chat                  — SSE streaming chat to Tiger agent
+ *   GET    /tiger/chat/history          — recent chat messages (SQLite)
+ *   DELETE /tiger/chat/history          — clear chat history
+ *   POST   /tiger/chat/persist          — persist a message to SQLite
+ *   POST   /tiger/route-task            — LLM router: which agent handles X?
+ *   POST   /tiger/deploy-dashboard      — git pull + rebuild + restart dashboard
+ *   GET    /tiger/keys                  — key presence map (no values exposed)
+ *   PATCH  /tiger/keys                  — upsert a key
+ *   DELETE /tiger/keys/:name            — remove a key
+ *   ALL    /api/gateway                 — proxy to OpenClaw gateway API
  */
 
 import express from "express";
