@@ -131,11 +131,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   // Initial mount: pick stored sessionKey, load its history, fetch sessions list.
   React.useEffect(() => {
     let cancelled = false
+    
+    // Check URL for session param
+    const urlParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '')
+    const sessionParam = urlParams.get('session')
+    let initialKey = sessionParam ? `agent:main:${sessionParam}` : readPersistedKey()
+    
     async function init() {
-      const persisted = readPersistedKey()
       if (cancelled) return
-      setCurrentSessionKey(persisted)
-      const [hist] = await Promise.all([loadHistoryFor(persisted), refreshSessions()])
+      setCurrentSessionKey(initialKey)
+      const [hist] = await Promise.all([loadHistoryFor(initialKey), refreshSessions()])
       if (!cancelled) {
         setMessages(hist)
         setLoading(false)

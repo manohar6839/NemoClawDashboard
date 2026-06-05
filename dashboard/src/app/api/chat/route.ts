@@ -36,6 +36,20 @@ async function persistMessage(role: "user" | "agent", content: string, sessionKe
   }
 }
 
+export async function GET(request: NextRequest) {
+  const sessionKey = request.nextUrl.searchParams.get("sessionKey") || DEFAULT_SESSION_KEY;
+  
+  try {
+    const res = await fetch(`${BRIDGE_URL}/tiger/chat/history?sessionId=${encodeURIComponent(sessionKey)}&limit=50`, {
+      headers: { Authorization: `Bearer ${BRIDGE_TOKEN}` },
+    });
+    const data = await res.json();
+    return Response.json(data);
+  } catch (err) {
+    return Response.json({ error: (err as Error).message }, { status: 500 });
+  }
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const message: string = body?.message;
@@ -47,8 +61,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Persist user message NOW, before the LLM call. If the call fails, the
-  // history still records what the user said.
+  // Persist user message NOW, before the LLM call
   await persistMessage("user", message, sessionKey);
 
   const t0 = Date.now();

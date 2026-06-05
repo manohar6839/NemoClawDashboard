@@ -53,6 +53,7 @@ const navMain = [
   { title: "Agents",    url: "/agents",    icon: Bot },
   { title: "Knowledge", url: "/knowledge", icon: Brain },
   { title: "Workspace", url: "/workspace", icon: FolderOpen },
+  { title: "Activity", url: "/activity",  icon: ScrollText },
   { title: "Cost",      url: "/cost",      icon: DollarSign },
   { title: "Logs",      url: "/logs",      icon: ScrollText },
 ]

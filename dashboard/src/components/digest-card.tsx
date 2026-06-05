@@ -1,5 +1,7 @@
 "use client"
 
+import { bridgeGet } from "@/lib/bridge"
+
 /**
  * digest-card.tsx — Today's digest of agent activity
  *
@@ -27,7 +29,7 @@ interface ActivityResponse {
   events: ActivityEvent[]
 }
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json())
+const fetcher = (url: string) => bridgeGet(url).then((r) => r.json())
 
 function relTime(ts: number): string {
   if (!ts) return ""

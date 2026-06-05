@@ -15,10 +15,16 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const section = searchParams.get("section"); // active | completed | all
+    const project = searchParams.get("project");   // dashboard, oil, etc
 
     let endpoint = "/tiger/file-tasks";
     if (section === "active") endpoint = "/tiger/file-tasks/active";
     else if (section === "completed") endpoint = "/tiger/file-tasks/completed";
+
+    // Add project filter if provided
+    if (project) {
+      endpoint += `?project=${encodeURIComponent(project)}`;
+    }
 
     const result = await bridgeGet(endpoint);
     return NextResponse.json(result);
