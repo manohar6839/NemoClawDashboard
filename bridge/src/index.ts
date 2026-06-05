@@ -63,6 +63,11 @@ import express from "express";
 import cors from "cors";
 import { authMiddleware } from "./auth.js";
 import statusRouter from "./routes/status.js";
+import healthRouter from "./routes/health.js";
+import suggestionsRouter from "./routes/suggestions.js";
+import alertsRouter from "./routes/alerts.js";
+import spawnRouter from "./routes/spawn.js";
+import contextRouter from "./routes/context.js";
 import logsRouter from "./routes/logs.js";
 import execRouter from "./routes/exec.js";
 import configRouter from "./routes/config.js";
@@ -120,6 +125,13 @@ app.get("/health", (_req, res) => {
 
 // Tiger endpoints — all scoped under /tiger
 app.use("/tiger/status", statusRouter);
+app.use("/tiger/health", healthRouter);
+app.use("/tiger/suggestions", suggestionsRouter);
+app.use("/tiger/alerts", alertsRouter);
+app.use("/tiger/spawn", spawnRouter);
+app.use("/tiger/context", contextRouter);
+app.use("/tiger/knowledge", (await import("./routes/knowledge.js")).default);
+app.use("/tiger/feedback", (await import("./routes/feedback.js")).default);
 app.use("/tiger/logs", logsRouter);    // SSE stream
 app.use("/tiger/exec", execRouter);
 app.use("/tiger/config", configRouter);
@@ -141,6 +153,9 @@ app.use("/tiger/deploy-dashboard", deployRouter);
 app.use("/tiger/route-task", routeTaskRouter);
 app.use("/tiger/keys", keysRouter);
 app.use("/tiger/chat", (await import("./routes/chat.js")).default);
+app.use("/tiger/chat/mirror", (await import("./routes/chat-mirror.js")).default);
+app.use("/tiger/telegram-webhook", (await import("./routes/telegram-webhook.js")).default);
+app.use("/angel", (await import("./routes/angel/positions.js")).default);
 
 // Gateway proxy — forwards to gateway inside Tiger container
 // This is needed because the dashboard runs in Dokploy which can't reach the container directly
