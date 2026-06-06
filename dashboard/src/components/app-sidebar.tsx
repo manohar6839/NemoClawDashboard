@@ -10,6 +10,7 @@ import {
   DollarSign,
   FolderOpen,
   Briefcase,
+  BarChart2,
 } from "lucide-react"
 import { useTigerLogs } from "@/hooks/use-bridge"
 
@@ -45,6 +46,11 @@ const navMain = [
     title: "Tasks",
     url: "/tasks",
     icon: CheckSquare,
+  },
+  {
+    title: "Positions",
+    url: "/positions",
+    icon: BarChart2,
   },
   {
     title: "Cost Monitor",
