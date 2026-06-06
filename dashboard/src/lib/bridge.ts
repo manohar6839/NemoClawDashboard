@@ -147,6 +147,57 @@ export async function bridgeDelete(path: string): Promise<unknown> {
  * @param lines - How many historical lines to tail
  * @param filter - Optional keyword filter
  */
+
+/**
+ * Make a PUT request to the Tiger Bridge.
+ * Used for file saves: PUT /tiger/agents/:id/file?path=...
+ */
+export async function bridgePut(
+  path: string,
+  query: Record<string, string> = {},
+  body: Record<string, unknown> = {}
+): Promise<unknown> {
+  const params = new URLSearchParams(query);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${BRIDGE_URL}${path}${qs}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`Bridge PUT ${path} failed: ${res.status} ${errBody}`);
+  }
+
+  return res.json();
+}
+
+
+export async function bridgePatch(
+  path: string,
+  body: Record<string, unknown> = {}
+): Promise<unknown> {
+  const res = await fetch(BRIDGE_URL + path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error('Bridge PATCH ' + path + ' failed: ' + res.status + ' ' + errBody);
+  }
+  return res.json();
+}
+
 export function bridgeLogsUrl(lines = 100, filter = ""): string {
   const url = new URL(`${BRIDGE_URL}/tiger/logs`);
   url.searchParams.set("lines", String(lines));

@@ -21,7 +21,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 const DB_PATH = path.join(DATA_DIR, "tiger.db");
-const db = new Database(DB_PATH);
+const db: Database.Database = new Database(DB_PATH);
 
 // Enable WAL mode for better concurrency
 db.pragma("journal_mode = WAL");
@@ -48,6 +48,9 @@ db.exec(`
     status TEXT DEFAULT 'backlog',
     priority TEXT DEFAULT 'medium',
     assigned_agent TEXT,
+    agent_reason TEXT,
+    telegram_chat_id TEXT,     -- Reserved: future task-from-Telegram
+    telegram_message_id TEXT, -- Reserved: future task-from-Telegram
     progress INTEGER DEFAULT 0,
     tags TEXT DEFAULT '[]',
     notes TEXT DEFAULT '',
@@ -55,6 +58,18 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'agent', 'system')),
+    content TEXT NOT NULL,
+    -- 'meta' is optional JSON for things like model used, tokens, duration.
+    meta TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+    ON chat_messages (session_id, created_at DESC);
 
   CREATE TABLE IF NOT EXISTS executions (
     id TEXT PRIMARY KEY,
@@ -86,6 +101,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_executions_task ON executions(task_id);
   CREATE INDEX IF NOT EXISTS idx_outputs_task ON outputs(task_id);
 `);
+
+// ─── Migrations ──────────────────────────────────────────────────────────────
+// Columns added after initial schema creation. ALTER TABLE is idempotent via
+// try/catch — SQLite raises "duplicate column" on repeated runs, which we ignore.
+try { db.exec("ALTER TABLE tasks ADD COLUMN agent_reason TEXT"); } catch { /* already exists */ }
+// Reserved columns — future task-from-Telegram feature
+try { db.exec("ALTER TABLE tasks ADD COLUMN telegram_chat_id TEXT"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE tasks ADD COLUMN telegram_message_id TEXT"); } catch { /* already exists */ }
 
 // ─── Helper to generate IDs ─────────────────────────────────────────────────
 
@@ -164,17 +187,18 @@ export const tasks = {
   },
 
   create(data: {
-    project_id: string;
+    project_id: string | null;
     title: string;
     description?: string;
     priority?: string;
     assigned_agent?: string;
+    agent_reason?: string;
     parent_task_id?: string;
   }): unknown {
     const id = generateId("task");
     db.prepare(`
-      INSERT INTO tasks (id, project_id, parent_task_id, title, description, priority, assigned_agent)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, project_id, parent_task_id, title, description, priority, assigned_agent, agent_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       data.project_id,
@@ -182,7 +206,8 @@ export const tasks = {
       data.title,
       data.description || "",
       data.priority || "medium",
-      data.assigned_agent || null
+      data.assigned_agent || null,
+      data.agent_reason || null
     );
     return tasks.findById(id);
   },
@@ -197,6 +222,7 @@ export const tasks = {
     tags: string;
     notes: string;
     due_date: string;
+    agent_reason: string;
   }>): unknown | undefined {
     const updates: string[] = [];
     const values: unknown[] = [];
@@ -210,6 +236,8 @@ export const tasks = {
     if (data.tags !== undefined) { updates.push("tags = ?"); values.push(data.tags); }
     if (data.notes !== undefined) { updates.push("notes = ?"); values.push(data.notes); }
     if (data.due_date !== undefined) { updates.push("due_date = ?"); values.push(data.due_date); }
+    if (data.agent_reason !== undefined) { updates.push("agent_reason = ?"); values.push(data.agent_reason); }
+    if (data.status !== undefined) { updates.push("status = ?"); values.push(data.status); }
 
     if (updates.length === 0) return tasks.findById(id);
 

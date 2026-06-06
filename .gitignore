@@ -36,3 +36,20 @@ config/*.json
 !config/*.example.json
 config/mcporter.json
 config/cron.json
+
+# ─── Added by housecleaning Apr 2026 ───
+# Claude Code session worktrees (local workspace artifacts)
+.claude/
+# Runtime SQLite databases — schema is in db.ts, not data/
+data/
+*.db
+*.db-shm
+*.db-wal
+# Backup files from patching sessions
+*.bak
+*.bak.*
+# Compiled bridge (regenerable from src/)
+bridge/dist/
+# macOS artifacts that can slip in via Mutagen
+.DS_Store
+._*

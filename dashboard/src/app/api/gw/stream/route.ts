@@ -1,55 +1,41 @@
-import { getGateway } from "@/lib/gateway"
+const BRIDGE_URL = process.env.TIGER_BRIDGE_URL || "http://localhost:3456"
+const BRIDGE_TOKEN = process.env.TIGER_BRIDGE_TOKEN || ""
 
 export const dynamic = "force-dynamic"
 
 export async function GET() {
-  const gw = getGateway()
-
-  // Ensure connected
-  try {
-    if (!gw.isConnected()) {
-      await gw.connect()
-    }
-  } catch {
-    return new Response("Gateway offline", { status: 502 })
-  }
-
   const encoder = new TextEncoder()
-  let cleanupFn: (() => void) | null = null
 
   const stream = new ReadableStream({
     start(controller) {
-      const handler = ({ event, payload, seq }: { event: string; payload: unknown; seq: number }) => {
-        if (event === "tick") return
-        const data = JSON.stringify({ event, payload, seq })
-        controller.enqueue(encoder.encode(`data: ${data}\n\n`))
-      }
-
-      gw.on("gateway-event", handler)
-
+      // Send initial connected message
       controller.enqueue(
-        encoder.encode(`data: ${JSON.stringify({ event: "stream.connected", payload: { connected: true } })}\n\n`)
+        encoder.encode(
+          `data: ${JSON.stringify({ event: "stream.connected", payload: { connected: true } })}\n\n`
+        )
       )
 
-      const keepalive = setInterval(() => {
-        controller.enqueue(encoder.encode(`: keepalive\n\n`))
-      }, 15000)
+      // Poll tiger status instead of gateway directly
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch(`${BRIDGE_URL}/tiger/status`, {
+            headers: { "Authorization": `Bearer ${BRIDGE_TOKEN}` },
+          })
+          const data = await res.json()
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ event: "health", payload: { status: data.status, ...data } })}\n\n`
+            )
+          )
+        } catch {
+          controller.enqueue(encoder.encode(`: keepalive\n\n`))
+        }
+      }, 10000)
 
-      const disconnectHandler = () => {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ event: "stream.disconnected", payload: { connected: false } })}\n\n`)
-        )
-      }
-      gw.on("disconnected", disconnectHandler)
-
-      cleanupFn = () => {
-        gw.off("gateway-event", handler)
-        gw.off("disconnected", disconnectHandler)
-        clearInterval(keepalive)
-      }
+      ;(controller as any)._cleanup = () => clearInterval(interval)
     },
-    cancel() {
-      cleanupFn?.()
+    cancel(controller: any) {
+      controller?._cleanup?.()
     },
   })
 

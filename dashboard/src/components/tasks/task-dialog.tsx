@@ -43,9 +43,9 @@ interface TaskDialogProps {
   onSubmit: (data: {
     title: string
     description?: string
-    status: string
-    priority: string
-    assigned_agent?: string
+    status?: string
+    priority?: string
+    assigned_agent?: string | null
     progress?: number
     tags?: string[]
     due_date?: string

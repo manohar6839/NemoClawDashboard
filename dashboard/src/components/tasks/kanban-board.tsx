@@ -72,14 +72,15 @@ export function KanbanBoard() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  // Load tasks from API
+  // Load tasks from TASKS.md via /api/tiger/file-tasks
   const loadTasks = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await request("/api/tiger/tasks") as { ok: boolean; tasks?: Task[] }
+      const data = await request("/api/tiger/file-tasks") as { ok: boolean; tasks?: any[] }
       if (data.ok && data.tasks) {
-        setTasks(data.tasks.map((t: Task) => ({
+        setTasks(data.tasks.map((t: any) => ({
           ...t,
+          content: t.title || t.content || t.description || "",  // map title to content for kanban
           tags: typeof t.tags === "string" ? JSON.parse(t.tags || "[]") : t.tags || [],
         })))
       }
@@ -443,13 +444,13 @@ export function KanbanBoard() {
           id: editingTask.id,
           title: editingTask.title,
           description: editingTask.description,
-          status: editingTask.status,
+          status: editingTask.status as string,
           priority: editingTask.priority,
           assigned_agent: editingTask.assigned_agent,
           progress: editingTask.progress,
           tags: editingTask.tags,
         } : null}
-        onSubmit={editingTask ? handleUpdateTask : handleAddTask}
+        onSubmit={editingTask ? handleUpdateTask as any : handleAddTask}
         onDelete={editingTask ? () => handleDeleteTask(editingTask.id) : undefined}
         onRun={editingTask ? () => handleRunTask(editingTask.id) : undefined}
       />

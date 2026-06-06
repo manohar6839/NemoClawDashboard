@@ -187,7 +187,7 @@ export function CostMonitor() {
                     <YAxis tick={{fontSize: 10}} stroke="#6b7280" tickFormatter={(v) => `$${v.toFixed(2)}`} />
                     <Tooltip
                       contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '6px' }}
-                      formatter={(value: number) => [`$${value.toFixed(4)}`, 'Cost']}
+                      formatter={(value) => [`$${Number(value).toFixed(4)}`, 'Cost']}
                     />
                     <Area type="monotone" dataKey="cost" stroke="#10b981" fillOpacity={1} fill="url(#colorCost)" />
                   </AreaChart>
@@ -217,9 +217,9 @@ export function CostMonitor() {
                     <YAxis type="category" dataKey="name" tick={{fontSize: 10}} stroke="#6b7280" width={100} />
                     <Tooltip
                       contentStyle={{ backgroundColor: '#1f2937', border: 'none', borderRadius: '6px' }}
-                      formatter={(value: number, _name: string, props: any) => {
+                      formatter={(value, _name, props) => {
                         const model = props?.payload?.fullModel || ''
-                        return [`$${value.toFixed(4)}`, model]
+                        return [`$${Number(value).toFixed(4)}`, model]
                       }}
                     />
                     <Bar dataKey="cost" fill="#8b5cf6" radius={[0, 4, 4, 0]}>
