@@ -51,6 +51,38 @@ interface SessionIndexEntry {
   updatedAt?: number;
 }
 
+/**
+ * OpenClaw injects machinery into user messages before they reach the model:
+ *   - leading blocks like:
+ *       Conversation info (untrusted metadata): ```json {...}```
+ *       Sender (untrusted metadata): ```json {...}```
+ *   - whole synthetic messages ("A new session was started via /new...",
+ *     heartbeat prompts, system reminders)
+ * None of that was typed by the human in Telegram, so the mirror strips it.
+ * Returning "" makes the caller drop the message entirely.
+ */
+function cleanUserText(raw: string): string {
+  let text = raw;
+
+  // Strip any leading "<Label> (untrusted metadata): ```json ... ```" blocks.
+  // They always appear before the real message; loop in case there are several.
+  const metaBlock = /^\s*[A-Za-z ]+\(untrusted metadata\):\s*```json[\s\S]*?```\s*/;
+  while (metaBlock.test(text)) {
+    text = text.replace(metaBlock, "");
+  }
+
+  // Synthetic system messages — not human input, drop them outright.
+  const synthetic = [
+    /^A new session was started via/,
+    /^\[?HEARTBEAT/i,
+    /^System:/,
+    /^GroupChat context/,
+  ];
+  if (synthetic.some((re) => re.test(text.trim()))) return "";
+
+  return text;
+}
+
 /** Newest telegram session: key + transcript path. */
 function resolveTelegramSession(): { key: string; file: string } | null {
   let index: Record<string, SessionIndexEntry>;
@@ -111,16 +143,26 @@ function parseTranscript(file: string): ThreadMessage[] {
 
     const content: unknown = entry.message?.content;
     let text = "";
+    let hasToolCall = false;
     if (typeof content === "string") {
       text = content;
     } else if (Array.isArray(content)) {
-      text = content
-        .filter((c) => c && c.type === "text" && typeof c.text === "string")
-        .map((c) => c.text)
-        .join("\n");
+      for (const c of content) {
+        if (!c) continue;
+        if (c.type === "toolCall") hasToolCall = true;
+        if (c.type === "text" && typeof c.text === "string") text += c.text + "\n";
+        // type === "thinking" is deliberately ignored
+      }
     }
+
+    // Assistant messages that carry toolCall blocks are intermediate working
+    // turns ("Let me check if codexbar is available...") — OpenClaw never
+    // sent those to Telegram, so the mirror must not show them either.
+    if (role === "assistant" && hasToolCall) continue;
+
+    if (role === "user") text = cleanUserText(text);
     text = text.trim();
-    if (!text) continue; // tool-call-only assistant turns have no text
+    if (!text) continue; // tool-call-only turns / fully-injected messages
 
     messages.push({
       seq,
