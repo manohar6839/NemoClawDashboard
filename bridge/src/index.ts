@@ -151,6 +151,8 @@ app.use("/tiger/agents", agentsRouter);
 app.use("/tiger/agents/activity", agentsActivityRouter);
 // Complete audit trail (executions + tasks + outputs + cron runs, paginated)
 app.use("/tiger/activity/audit", (await import("./routes/activity-audit.js")).default);
+// Layered self-diagnosis (memory / gateway / container / crons)
+app.use("/tiger/health/system", (await import("./routes/health-system.js")).default);
 app.use("/tiger/deploy-dashboard", deployRouter);
 app.use("/tiger/route-task", routeTaskRouter);
 app.use("/tiger/keys", keysRouter);
@@ -203,8 +205,23 @@ app.listen(PORT, HOST, () => {
   // spawned specialist. See lib/inbox.ts for the contract.
   startInboxScheduler();
 
-  // Start Telegram channel — bridge takes over from OpenClaw native handler.
-  // Requires channels.telegram.enabled=false in openclaw.json.
-  const tgChannel = new TelegramChannel();
-  tgChannel.start();
+  // ── Bridge Telegram poller: DISABLED by default (2026-06-11) ──────────────
+  // Reality check: OpenClaw's NATIVE telegram channel owns the bot (its
+  // session agent:main:telegram:direct:* is the live conversation). Running
+  // this poller alongside it made two consumers race for getUpdates —
+  // Telegram 409s the loser ~every 40s, and when the bridge occasionally
+  // WON, it relayed the stolen message into a fresh context-less tg_*
+  // session with a 120s budget, replied "⚠️ Tiger timed out or is offline"
+  // on slow turns, and the message never reached the native transcript
+  // (invisible to the dashboard mirror).
+  // Outbound sends (routes/notify.ts) use the raw Bot API and are unaffected.
+  // Re-enable ONLY if native telegram is turned off in openclaw.json:
+  //   TIGER_TELEGRAM_POLLER=on
+  if (process.env.TIGER_TELEGRAM_POLLER === "on") {
+    const tgChannel = new TelegramChannel();
+    tgChannel.start();
+    console.log("[tiger-bridge] Telegram poller: ON (ensure OpenClaw native telegram is disabled!)");
+  } else {
+    console.log("[tiger-bridge] Telegram poller: off (OpenClaw native channel owns the bot)");
+  }
 });
