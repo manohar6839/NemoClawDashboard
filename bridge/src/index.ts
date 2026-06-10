@@ -154,7 +154,18 @@ app.use("/tiger/route-task", routeTaskRouter);
 app.use("/tiger/keys", keysRouter);
 app.use("/tiger/chat", (await import("./routes/chat.js")).default);
 app.use("/tiger/chat/mirror", (await import("./routes/chat-mirror.js")).default);
+// Telegram mirror v2 — reads OpenClaw's native session transcript directly.
+// (chat-mirror + telegram-webhook above are the legacy write-side, kept for
+// API compatibility but no longer the data source for the dashboard card.)
+app.use("/tiger/chat/telegram", (await import("./routes/chat-telegram.js")).default);
 app.use("/tiger/telegram-webhook", (await import("./routes/telegram-webhook.js")).default);
+
+// TASKS.md inbox — manual drain trigger (the scheduler below runs it on its own)
+const { drainInboxOnce, startInboxScheduler } = await import("./lib/inbox.js");
+app.post("/tiger/inbox/drain", async (_req, res) => {
+  const result = await drainInboxOnce(true);
+  res.json({ ok: !result.startsWith("error"), result });
+});
 app.use("/angel", (await import("./routes/angel/positions.js")).default);
 
 // Gateway proxy — forwards to gateway inside Tiger container
@@ -185,6 +196,10 @@ app.listen(PORT, HOST, () => {
 
   // Initialize file watcher for task status updates
   initWatcher();
+
+  // TASKS.md inbox drainer — dispatches one pending item per cycle to a
+  // spawned specialist. See lib/inbox.ts for the contract.
+  startInboxScheduler();
 
   // Start Telegram channel — bridge takes over from OpenClaw native handler.
   // Requires channels.telegram.enabled=false in openclaw.json.
