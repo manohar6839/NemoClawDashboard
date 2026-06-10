@@ -149,6 +149,8 @@ app.use("/tiger/notify", notifyRouter);
 app.use("/tiger/dispatch", dispatchRouter);
 app.use("/tiger/agents", agentsRouter);
 app.use("/tiger/agents/activity", agentsActivityRouter);
+// Complete audit trail (executions + tasks + outputs + cron runs, paginated)
+app.use("/tiger/activity/audit", (await import("./routes/activity-audit.js")).default);
 app.use("/tiger/deploy-dashboard", deployRouter);
 app.use("/tiger/route-task", routeTaskRouter);
 app.use("/tiger/keys", keysRouter);
