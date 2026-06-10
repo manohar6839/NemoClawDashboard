@@ -165,6 +165,8 @@ function cronEvents(): AuditEvent[] {
       } catch {
         continue;
       }
+      // Run files log lifecycle actions; only "finished" carries the outcome.
+      if (run.action && run.action !== "finished") continue;
       const ts = run.startedAt ?? run.ts ?? run.runAtMs ?? run.timestamp;
       if (!ts) continue;
       const iso = typeof ts === "number" ? new Date(ts).toISOString() : toIso(String(ts));
