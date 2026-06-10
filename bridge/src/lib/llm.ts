@@ -6,22 +6,24 @@
  *   generateProjectTitle(text) → 3-7 word project title
  *   generateProjectGoal(text)  → one-line success criterion
  *
- * Configured via env vars (already declared in bridge/.env):
+ * Configured via env vars (declared in bridge/.env):
  *   TIGER_ROUTER_MODEL    Model slug for ALL router calls.
  *                         Examples:
  *                           "anthropic/claude-haiku-4-5"   → Anthropic API direct
- *                           "minimax/MiniMax-M2.7"         → OpenRouter
- *                           "openrouter/auto"              → OpenRouter (meta-router)
- *                         Default if unset: "anthropic/claude-haiku-4-5".
+ *                           "minimax-3"                    → self-hosted LiteLLM gateway
+ *                         Default if unset: "minimax-3" (gateway).
  *   ANTHROPIC_API_KEY     Required when ROUTER_MODEL has "anthropic/" prefix.
- *   OPENROUTER_API_KEY    Required for everything else.
+ *   LLM_GATEWAY_URL       Self-hosted gateway base URL.
+ *                         Default: https://llm.manohargupta.com/v1
+ *   LLM_GATEWAY_KEY       Bearer key for the gateway (LiteLLM master/virtual key).
  *
  * Routing rule (intentionally simple):
  *   slug startsWith "anthropic/"  → Anthropic API, model = slug minus "anthropic/"
- *   anything else                 → OpenRouter, model = slug verbatim
+ *   anything else                 → LiteLLM gateway, model = slug verbatim
  *
- *   Note: "openrouter/auto" is OR's literal model ID, so we DON'T strip it.
- *   This is why the rule only special-cases "anthropic/".
+ *   OpenRouter was removed 2026-06-10: its credits ran dry and silently took
+ *   classifyAgent down with it. The gateway runs on Manohar's own MiniMax /
+ *   Anthropic keys, so there is no third-party balance to surprise us.
  *
  * Failure mode (the most important property):
  *   Every public helper catches errors internally. Callers never see exceptions
@@ -34,9 +36,10 @@
  */
 
 // ─── Configuration ─────────────────────────────────────────────────────────
-const ROUTER_MODEL = process.env.TIGER_ROUTER_MODEL || "anthropic/claude-haiku-4-5";
+const ROUTER_MODEL = process.env.TIGER_ROUTER_MODEL || "minimax-3";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const LLM_GATEWAY_URL = (process.env.LLM_GATEWAY_URL || "https://llm.manohargupta.com/v1").replace(/\/$/, "");
+const LLM_GATEWAY_KEY = process.env.LLM_GATEWAY_KEY || "";
 const ANTHROPIC_VERSION = "2023-06-01";
 
 // Curated list of valid agent IDs. Used to validate classifier output.
@@ -45,7 +48,7 @@ export type AgentId = (typeof AGENT_IDS)[number];
 
 // ─── Internal: provider resolution ──────────────────────────────────────────
 interface ResolvedModel {
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "gateway";
   model: string;
 }
 
@@ -57,7 +60,7 @@ function resolveModel(slug: string): ResolvedModel {
   if (slug.startsWith("anthropic/")) {
     return { provider: "anthropic", model: slug.slice("anthropic/".length) };
   }
-  return { provider: "openrouter", model: slug };
+  return { provider: "gateway", model: slug };
 }
 
 // ─── Internal: low-level LLM call ───────────────────────────────────────────
@@ -107,18 +110,15 @@ async function callLLM(
     return text.trim();
   }
 
-  // OpenRouter (catch-all for everything except "anthropic/")
-  if (!OPENROUTER_API_KEY) {
-    throw new Error("OPENROUTER_API_KEY not set");
+  // Self-hosted LiteLLM gateway (catch-all for everything except "anthropic/")
+  if (!LLM_GATEWAY_KEY) {
+    throw new Error("LLM_GATEWAY_KEY not set");
   }
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(`${LLM_GATEWAY_URL}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      Authorization: `Bearer ${LLM_GATEWAY_KEY}`,
       "content-type": "application/json",
-      // OR recommends these for observability/ranking — harmless if ignored.
-      "HTTP-Referer": "https://agent.manohargupta.com",
-      "X-Title": "Tiger Bridge Router",
     },
     body: JSON.stringify({
       model,
@@ -131,13 +131,13 @@ async function callLLM(
   });
   if (!res.ok) {
     const errBody = await res.text().catch(() => "<no body>");
-    throw new Error(`OpenRouter API ${res.status}: ${errBody.slice(0, 200)}`);
+    throw new Error(`LLM gateway ${res.status}: ${errBody.slice(0, 200)}`);
   }
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
   const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error("OpenRouter returned no message content");
+  if (!text) throw new Error("LLM gateway returned no message content");
   return text.trim();
 }
 
