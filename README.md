@@ -1,91 +1,60 @@
-# Clawd Agent Dashboard
+# Tiger Command Center
 
-> A premium, dark-mode "Command Center" for the Clawd AI Agent.
+> Self-hosted AI orchestration: one Tiger, four specialists, every action audited.
 
-![Dashboard Preview](https://via.placeholder.com/800x400?text=Clawd+Dashboard+Preview)
+The control plane for **Tiger**, an OpenClaw-based AI agent running on a
+Hetzner VPS, reachable at `agent.manohargupta.com`. Tiger orchestrates four
+specialist sub-agents — **Cody** (code), **Ethan** (research), **Cathy**
+(writing), **Elon** (planning) — handles Telegram, watches Angel One
+positions, and drains a TASKS.md inbox while you do real work.
 
-## Overview
+## What lives here
 
-The **Clawd Dashboard** is a centralized interface designed to monitor and interact with the Clawd AI agent. It provides real-time visibility into the agent's memory, logs, scheduled tasks (cron jobs), and capabilities (skills), all wrapped in a sleek, responsive UI.
+| Path | What it is |
+|---|---|
+| `dashboard/` | Next.js 14 command center UI (`tiger-dashboard`, :3100) |
+| `bridge/` | Express control-plane API (`tiger-bridge`, :3456, localhost-only) |
+| `skills/` | OpenClaw skills (spawn-delegate, angel-positions, inbox-manager, sys-health, youtube-full) |
+| `ARCHITECTURE.md` | The real system map — read this first |
+| `TOOLS.md` | Tool/skill quick reference |
 
-## Features
+## Core capabilities
 
-- **📊 System Status**: Real-time heartbeat monitoring of the `clawdbot` process.
-- **🧠 Memory Management**: View and edit the agent's core memory (`MEMORY.md`) and daily logs.
-- **🛠️ Skills Registry**: Browse, edit, and manage the agent's capabilities and MCP tools.
-- **⏱️ Cron Jobs**: detailed view and control over scheduled background tasks.
-- **💬 Chat Interface**: Integrated chat window to communicate directly with the agent.
-- **🌗 Dark Mode**: Built with a "Slate & Violet" aesthetic optimized for low-light environments.
+- **Sub-agent spawning** — `POST /tiger/spawn` runs a specialist in an
+  isolated OpenClaw session; result lands on Telegram. Tracked in `executions`.
+- **TASKS.md inbox** — drop `- [ ]` lines under `## 📥 INBOX`; the bridge
+  dispatches the top item to the right specialist every 30 min (9–20 IST).
+- **Telegram mirror** — the homepage thread reads OpenClaw's native session
+  transcript: full history, both directions, perfectly in sync.
+- **Audit trail** — `/activity` merges spawns, cron runs, task lifecycle,
+  and outputs into one paginated, filterable timeline.
+- **Own model gateway** — every model call routes through
+  `llm.manohargupta.com` (LiteLLM on own MiniMax/Anthropic keys). Primary:
+  MiniMax-M3.
 
-## Tech Stack
+## Running it
 
-- **Framework**: [Next.js 14](https://nextjs.org/) (App Router)
-- **UI Components**: [Shadcn/UI](https://ui.shadcn.com/) (Radix Primitives)
-- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
-- **Icons**: [Lucide React](https://lucide.dev/)
-- **State Management**: [SWR](https://swr.vercel.app/) / React Query
-- **Backend**: Next.js API Routes (Serverless)
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 18+
-- npm or pnpm
-
-### Installation
-
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/manohar6839/clawd-dashboard.git
-    cd clawd-dashboard
-    ```
-
-2.  Install dependencies:
-    ```bash
-    npm install
-    cd dashboard && npm install
-    ```
-
-3.  Configure Environment:
-    - Copy example configs:
-      ```bash
-      cp config/mcporter.example.json config/mcporter.json
-      cp config/cron.example.json config/cron.json
-      ```
-
-### Running the Dashboard
-
-Start the development server:
+Both services are systemd units on the host:
 
 ```bash
-npm run dashboard
+systemctl restart tiger-bridge      # Express via tsx — no build step
+cd dashboard && npm run build && systemctl restart tiger-dashboard
 ```
 
-The dashboard will be available at [http://localhost:3000](http://localhost:3000).
+Env contracts:
+- `bridge/.env` — `TIGER_BRIDGE_TOKEN`, `LLM_GATEWAY_URL`, `LLM_GATEWAY_KEY`,
+  `TIGER_ROUTER_MODEL`, Telegram credentials
+- `dashboard/.env.local` — `TIGER_BRIDGE_URL`, `TIGER_BRIDGE_TOKEN`
 
-## Project Structure
+⚠️ The bridge token is also embedded in OpenClaw cron payloads
+(`cron/jobs.json`, twice). Rotate all four locations together.
 
+## Git
+
+Forgejo is canonical (`git.manohargupta.com/manohar/OpenClawDashboard`, SSH
+port 2222); GitHub (`manohar6839/NemoClawDashboard`) is a **public** mirror —
+never commit secrets. Push to both:
+
+```bash
+git push origin main && git push github main
 ```
-clawd/
-├── .agent/          # Agent self-knowledge & documentation
-├── dashboard/       # Next.js Application
-│   ├── src/app/     # App Router Pages (Memory, Skills, Cron, Chat)
-│   └── src/components/ # Shared UI Components
-├── config/          # Agent configuration (Cron, MCP)
-├── memory/          # Agent daily logs
-├── tools/           # External tool scripts
-└── MEMORY.md        # Core Agent Memory
-```
-
-## Contributing
-
-1.  Fork the repository.
-2.  Create a feature branch (`git checkout -b feature/amazing-feature`).
-3.  Commit your changes (`git commit -m 'feat: Add amazing feature'`).
-4.  Push to the branch (`git push origin feature/amazing-feature`).
-5.  Open a Pull Request.
-
-## License
-
-MIT © [Manohar Air](https://github.com/manohar6839)
