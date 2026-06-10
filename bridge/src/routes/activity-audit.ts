@@ -132,6 +132,22 @@ function outputEvents(beforeIso: string | null, limit: number): AuditEvent[] {
 
 let cronCache: { stamp: string; events: AuditEvent[] } | null = null;
 
+/** jobId → human name, from cron/jobs.json (cached per cron rebuild). */
+function loadJobNames(): Record<string, string> {
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(DATA_DIR, "cron", "jobs.json"), "utf-8"),
+    ) as { jobs?: Array<{ id?: string; name?: string }> };
+    const map: Record<string, string> = {};
+    for (const j of raw.jobs ?? []) {
+      if (j.id && j.name) map[j.id] = j.name;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 function cronEvents(): AuditEvent[] {
   const runsDir = join(DATA_DIR, "cron", "runs");
   if (!existsSync(runsDir)) return [];
@@ -149,6 +165,7 @@ function cronEvents(): AuditEvent[] {
   const stamp = files.join("|");
   if (cronCache && cronCache.stamp === stamp) return cronCache.events;
 
+  const jobNames = loadJobNames();
   const events: AuditEvent[] = [];
   for (const file of files) {
     let content: string;
@@ -170,7 +187,8 @@ function cronEvents(): AuditEvent[] {
       const ts = run.startedAt ?? run.ts ?? run.runAtMs ?? run.timestamp;
       if (!ts) continue;
       const iso = typeof ts === "number" ? new Date(ts).toISOString() : toIso(String(ts));
-      const name = run.jobName ?? run.name ?? file.replace(/\.jsonl$/, "");
+      const jobId = String(run.jobId ?? file.replace(/\.jsonl$/, ""));
+      const name = run.jobName ?? run.name ?? jobNames[jobId] ?? jobId;
       const status = run.status ?? (run.error ? "error" : "ok");
       events.push({
         id: `cron:${file}:${iso}`,
@@ -179,7 +197,7 @@ function cronEvents(): AuditEvent[] {
         actor: "cron",
         summary: String(name).slice(0, 160),
         status: String(status),
-        ref: run.jobId ?? file.replace(/\.jsonl$/, ""),
+        ref: jobId,
       });
     }
   }
