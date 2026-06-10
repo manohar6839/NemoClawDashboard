@@ -37,9 +37,12 @@ function timeAgo(timestamp: number | null): string {
 
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    // Use execInSandbox to call /tiger/agents from inside OpenClaw container
+    // Use execInSandbox to call /tiger/agents from inside OpenClaw container.
+    // Token comes from env — a previous version hardcoded it here, which
+    // leaked it to the public GitHub mirror (rotated 2026-06-10).
+    const token = process.env.TIGER_BRIDGE_TOKEN || "";
     const { stdout } = await execInSandbox(
-      `curl -s "http://172.17.0.1:3456/tiger/agents" -H "Authorization: Bearer 14fb879429386b69beac339bbd98e43011ec29485da17592410da34ed97e0236"`
+      `curl -s "http://172.17.0.1:3456/tiger/agents" -H "Authorization: Bearer ${token}"`
     );
 
     let rawData: any;
